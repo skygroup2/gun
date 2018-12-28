@@ -6,14 +6,14 @@ PROJECT_VERSION = 1.3.0
 
 # Options.
 
-CT_OPTS += -pa test -ct_hooks gun_ct_hook [] # -boot start_sasl
+CT_OPTS += -ct_hooks gun_ct_hook [] # -boot start_sasl
 
 # Dependencies.
 
 LOCAL_DEPS = ssl
 
 DEPS = cowlib
-dep_cowlib = git https://github.com/ninenines/cowlib 2.6.0
+dep_cowlib = git https://github.com/ninenines/cowlib master
 
 DOC_DEPS = asciideck
 

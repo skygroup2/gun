@@ -68,7 +68,12 @@ receive_infinity(Port, Acc) ->
 	receive
 		{Port, {data, {eol, Line}}} ->
 			ct:log("~ts", [Line]),
-			io:format(user, "~s~n", [Line]),
+			%% Somehow we may receive the same line multiple times.
+			%% We therefore only print if it's a line we didn't print before.
+			case lists:member(Line, Acc) of
+				false -> io:format(user, "~s~n", [Line]);
+				true -> ok
+			end,
 			receive_infinity(Port, [Line|Acc]);
 		{Port, Reason={exit_status, _}} ->
 			ct:log("~ts", [[[L, $\n] || L <- lists:reverse(Acc)]]),
@@ -79,7 +84,8 @@ run_tests() ->
 	timer:sleep(1000),
 	Tests = scrape_tests(),
 	ct:pal("Test ports: ~p~n", [Tests]),
-	run_tests(Tests).
+	run_tests(Tests),
+	timer:sleep(1000).
 
 run_tests([]) ->
 	ok;
@@ -99,8 +105,7 @@ run_tests([Port|Tail]) ->
 				ok
 		after 100 ->
 			ok
-		end,
-		ok = gun:close(Conn)
+		end
 	after
 		run_tests(Tail)
 	end.
