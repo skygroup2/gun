@@ -28,20 +28,11 @@
 -type http_socket() :: {atom(), inet:socket()}.
 -export_type([http_socket/0]).
 
--ifdef(no_proxy_sni_support).
-
 ssl_opts(Host, Opts) ->
-  hackney_connect:ssl_opts(Host, Opts).
-
--else.
-
-ssl_opts(Host, Opts) ->
-  [{server_name_indication, Host} | hackney_connect:ssl_opts(Host,Opts)].
-
--endif.
+  [{server_name_indication, Host} | gun_util:ssl_opts(Host,Opts)].
 
 %% @doc Atoms used to identify messages in {active, once | true} mode.
-messages({hackney_ssl, _}) ->
+messages({gun_ssl, _}) ->
   {ssl, ssl_closed, ssl_error};
 messages({_, _}) ->
   {tcp, tcp_closed, tcp_error}.
@@ -64,7 +55,7 @@ connect(ProxyHost, ProxyPort, Opts, Timeout)
     send_timeout_close, raw, inet6, ip],
   BaseOpts = [binary, {active, false}, {packet, 0}, {keepalive,  true},
     {nodelay, true}],
-  ConnectOpts = hackney_util:filter_options(Opts, AcceptedOpts, BaseOpts),
+  ConnectOpts = gun_util:filter_options(Opts, AcceptedOpts, BaseOpts),
 
   %% connnect to the proxy, and upgrade the socket if needed.
   case gen_tcp:connect(ProxyHost, ProxyPort, ConnectOpts) of
@@ -74,7 +65,7 @@ connect(ProxyHost, ProxyPort, Opts, Timeout)
           %% if we are connecting to a remote https source, we
           %% upgrade the connection socket to handle SSL.
           case Transport of
-            hackney_ssl ->
+            gun_ssl ->
               SSLOpts = ssl_opts(Host, Opts),
               %% upgrade the tcp connection
               case ssl:connect(Socket, SSLOpts) of
@@ -166,7 +157,7 @@ do_handshake(Socket, Host, Port, Options) ->
               _ ->
                 iolist_to_binary([Host, ":", integer_to_list(Port)])
             end,
-  UA =  hackney_request:default_ua(),
+  UA =  <<"gun/1.3.0">>,
   Headers0 = [<<"Host: ", HostHdr/binary>>,
     <<"User-Agent: ", UA/binary >>],
 
@@ -181,7 +172,7 @@ do_handshake(Socket, Host, Port, Options) ->
   Path = iolist_to_binary([Host, ":", integer_to_list(Port)]),
 
   Payload = [<< "CONNECT ", Path/binary, " HTTP/1.1", "\r\n" >>,
-    hackney_bstr:join(lists:reverse(Headers), <<"\r\n">>),
+    gun_bstr:join(lists:reverse(Headers), <<"\r\n">>),
     <<"\r\n\r\n">>],
   case gen_tcp:send(Socket, Payload) of
     ok ->
