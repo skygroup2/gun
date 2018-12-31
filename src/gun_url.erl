@@ -37,13 +37,13 @@ parse_url(URL) when is_list(URL) ->
       parse_url(unicode:characters_to_binary(list_to_binary(URL)))
   end;
 parse_url(<<"http://", Rest/binary>>) ->
-  parse_url(Rest, #{transport => hackney_tcp, scheme => http});
+  parse_url(Rest, #{transport => gun_tcp, scheme => http});
 parse_url(<<"https://", Rest/binary>>) ->
-  parse_url(Rest, #{transport => hackney_ssl, scheme=> https});
+  parse_url(Rest, #{transport => gun_ssl, scheme=> https});
 parse_url(<<"http+unix://", Rest/binary>>) ->
-  parse_url(Rest, #{transport => hackney_local_tcp, scheme => http_unix});
+  parse_url(Rest, #{transport => gun_local_tcp, scheme => http_unix});
 parse_url(URL) ->
-  parse_url(URL, #{transport => hackney_tcp, scheme => http}).
+  parse_url(URL, #{transport => gun_tcp, scheme => http}).
 parse_url(URL, S) ->
   case binary:split(URL, <<"/">>) of
     [Addr] ->
@@ -101,11 +101,11 @@ normalize(#{scheme := Scheme, host := Host0, port := Port,
   Path1 = Fun(Path),
   Url#{host => Host, netloc => Netloc, path => Path1}.
 
-transport_scheme(hackney_tcp) ->
+transport_scheme(gun_tcp) ->
   http;
-transport_scheme(hackney_ssl) ->
+transport_scheme(gun_ssl) ->
   https;
-transport_scheme(hackney_local_tcp) ->
+transport_scheme(gun_local_tcp) ->
   http_unix.
 
 unparse_url(#{scheme := Scheme, netloc := Netloc, path := Path, qs := Qs, fragment := Fragment, user := User, password := Password}) ->
@@ -176,9 +176,9 @@ parse_addr(Addr, S) ->
 
 parse_netloc(<<"[", Rest/binary>>, #{transport := Transport} = S) ->
   case binary:split(Rest, <<"]">>, [trim]) of
-    [Host] when Transport =:= hackney_tcp ->
+    [Host] when Transport =:= gun_tcp ->
       S#{host => binary_to_list(Host), port => 80};
-    [Host] when Transport =:= hackney_ssl ->
+    [Host] when Transport =:= gun_ssl ->
       S#{host => binary_to_list(Host), port => 443};
     [Host, <<":", Port/binary>>] when Port /= <<>> ->
       S#{host => binary_to_list(Host),
@@ -189,11 +189,11 @@ parse_netloc(<<"[", Rest/binary>>, #{transport := Transport} = S) ->
 
 parse_netloc(Netloc, #{transport := Transport} = S) ->
   case binary:split(Netloc, <<":">>, [trim]) of
-    [Host] when Transport =:= hackney_tcp ->
+    [Host] when Transport =:= gun_tcp ->
       S#{host => unicode:characters_to_list((Host)), port => 80};
-    [Host] when Transport =:= hackney_ssl ->
+    [Host] when Transport =:= gun_ssl ->
       S#{host => unicode:characters_to_list(Host), port => 443};
-    [Host] when Transport =:= hackney_local_tcp ->
+    [Host] when Transport =:= gun_local_tcp ->
       S#{host => unicode:characters_to_list(urldecode(Host)), port => 0};
     [Host, Port] ->
       S#{host => unicode:characters_to_list(Host), port => list_to_integer(binary_to_list(Port))}
