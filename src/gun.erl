@@ -286,16 +286,16 @@ consider_tracing(_, _) ->
 info(ServerPid) ->
 	{_, #state{
 		socket=Socket,
-		transport=Transport,
+		proxy_handle = ProxyHandle,
 		protocol=Protocol,
 		origin_host=OriginHost,
 		origin_port=OriginPort,
 		intermediaries=Intermediaries
 	}} = sys:get_state(ServerPid),
-	{ok, {SockIP, SockPort}} = Transport:sockname(Socket),
+	{ok, {SockIP, SockPort}} = ProxyHandle:sockname(Socket),
 	#{
 		socket => Socket,
-		transport => Transport:name(),
+		transport => ProxyHandle:name(),
 		protocol => Protocol:name(),
 		sock_ip => SockIP,
 		sock_port => SockPort,
@@ -824,15 +824,15 @@ handle_common(cast, {shutdown, Owner}, _, #state{owner=Owner}) ->
 	stop;
 %% We stop when the owner is gone.
 handle_common(info, {'DOWN', OwnerRef, process, Owner, Reason}, _, #state{
-		owner=Owner, owner_ref=OwnerRef, socket=Socket, transport=Transport,
-		protocol=Protocol, protocol_state=ProtoState}) ->
+	owner=Owner, owner_ref=OwnerRef, socket=Socket, proxy_handle = ProxyHandle,
+	protocol=Protocol, protocol_state=ProtoState}) ->
 	_ = case Protocol of
 		undefined -> ok;
 		_ -> Protocol:close(owner_gone, ProtoState)
 	end,
 	_ = case Socket of
 		undefined -> ok;
-		_ -> Transport:close(Socket)
+		_ -> ProxyHandle:close(Socket)
 	end,
 	owner_gone(Reason);
 handle_common({call, From}, _, _, _) ->
@@ -864,14 +864,14 @@ commands([{state, ProtoState}|Tail], State) ->
 %% the transport and/or protocol in order to keep track
 %% of the intermediaries properly.
 commands([{origin, _Scheme, Host, Port, Type}|Tail],
-		State=#state{transport=Transport, protocol=Protocol,
+		State=#state{proxy_handle = ProxyHandle, protocol=Protocol,
 			origin_host=IntermediateHost, origin_port=IntermediatePort,
 			intermediaries=Intermediaries}) ->
 	Info = #{
 		type => Type,
 		host => IntermediateHost,
 		port => IntermediatePort,
-		transport => Transport:name(),
+		transport => ProxyHandle:name(),
 		protocol => Protocol:name()
 	},
 	commands(Tail, State#state{origin_host=Host, origin_port=Port,
@@ -889,11 +889,11 @@ commands([{switch_protocol, Protocol, _ProtoState0}|Tail],
 	commands(Tail, keepalive_timeout(State#state{protocol=Protocol, protocol_state=ProtoState})).
 
 disconnect(State=#state{owner=Owner, opts=Opts,
-		socket=Socket, transport=Transport,
+		socket=Socket, proxy_handle = ProxyHandle,
 		protocol=Protocol, protocol_state=ProtoState}, Reason) ->
 	Protocol:close(Reason, ProtoState),
 	%% @todo Need a special state for orderly shutdown of a connection.
-	Transport:close(Socket),
+	ProxyHandle:close(Socket),
 	%% We closed the socket, discard any remaining socket events.
 	disconnect_flush(State),
 	%% @todo Stop keepalive timeout, flush message.
@@ -914,8 +914,8 @@ disconnect_flush(State=#state{socket=Socket, messages={OK, Closed, Error}}) ->
 		ok
 	end.
 
-active(State=#state{socket=Socket, transport=Transport}) ->
-	Transport:setopts(Socket, [{active, once}]),
+active(State=#state{socket=Socket, proxy_handle = ProxyHandle}) ->
+	ProxyHandle:setopts(Socket, [{active, once}]),
 	State.
 
 keepalive_timeout(State=#state{opts=Opts, protocol=Protocol}) ->
