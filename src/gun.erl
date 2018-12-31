@@ -174,6 +174,7 @@
 	keepalive_ref :: undefined | reference(),
 	socket :: undefined | inet:socket() | ssl:sslsocket(),
 	transport :: module(),
+	proxy_handle :: module(),
 	messages :: {atom(), atom(), atom()},
 	protocol :: module(),
 	protocol_state :: any(),
@@ -648,10 +649,18 @@ init({Owner, Host, Port, Opts}) ->
 		tcp -> gun_tcp;
 		tls -> gun_tls
 	end,
+
+	ProxyHandle = case maps:get(proxy, Opts, undefined) of
+	 	undefined ->
+			Transport;
+	 	_ ->
+			Transport
+ 	end,
+
 	OwnerRef = monitor(process, Owner),
 	State = #state{owner=Owner, owner_ref=OwnerRef,
 		host=Host, port=Port, origin_host=Host, origin_port=Port,
-		opts=Opts, transport=Transport, messages=Transport:messages()},
+		opts=Opts, transport=Transport, proxy_handle = ProxyHandle, messages=Transport:messages()},
 	{ok, not_connected, State,
 		{next_event, internal, {retries, Retry}}}.
 
@@ -659,15 +668,16 @@ default_transport(443) -> tls;
 default_transport(_) -> tcp.
 
 not_connected(_, {retries, Retries},
-		State=#state{host=Host, port=Port, opts=Opts, transport=Transport}) ->
+		State=#state{host=Host, port=Port, opts=Opts, transport=Transport, proxy_handle = ProxyHandle}) ->
 	TransOpts0 = maps:get(transport_opts, Opts, []),
 	TransOpts1 = case Transport of
 		gun_tcp -> TransOpts0;
 		gun_tls -> ensure_alpn(maps:get(protocols, Opts, [http2, http]), TransOpts0)
 	end,
+
 	TransOpts = [binary, {active, false}|TransOpts1],
 	ConnectTimeout = maps:get(connect_timeout, Opts, infinity),
-	case Transport:connect(Host, Port, TransOpts, ConnectTimeout) of
+	case ProxyHandle:connect(Host, Port, TransOpts, ConnectTimeout) of
 		{ok, Socket} when Transport =:= gun_tcp ->
 			Protocol = case maps:get(protocols, Opts, [http]) of
 				[http] -> gun_http;
