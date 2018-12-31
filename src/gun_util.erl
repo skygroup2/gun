@@ -11,11 +11,77 @@
 -export([maybe_apply_defaults/2]).
 -export([is_ipv6/1]).
 -export([privdir/0]).
--export([mod_metrics/0]).
 -export([to_atom/1]).
 
 -export([merge_opts/2]).
 -export([to_int/1]).
+-export([ssl_opts/2]).
+
+-include_lib("public_key/include/OTP-PUB-KEY.hrl").
+
+%% @doc ssl_opts
+ssl_opts(Host, Options) ->
+  case proplists:get_value(ssl_options, Options) of
+    undefined ->
+      ssl_opts_1(Host, Options);
+    [] ->
+      ssl_opts_1(Host, Options);
+    SSLOpts ->
+      SSLOpts
+  end.
+
+ssl_opts_1(Host, Options) ->
+  Insecure =  proplists:get_value(insecure, Options, false),
+  CACerts = certifi:cacerts(),
+  case Insecure of
+    true ->
+      [{verify, verify_none}];
+    false ->
+      VerifyFun = {
+        fun ssl_verify_hostname:verify_fun/3,
+        [{check_hostname, Host}]
+       },
+      [{verify, verify_peer},
+       {depth, 99},
+       {cacerts, CACerts},
+       {partial_chain, fun partial_chain/1},
+       {verify_fun, VerifyFun}]
+  end.
+
+%% code from rebar3 undert BSD license
+partial_chain(Certs) ->
+  Certs1 = lists:reverse([{Cert, public_key:pkix_decode_cert(Cert, otp)} ||
+    Cert <- Certs]),
+  CACerts = certifi:cacerts(),
+  CACerts1 = [public_key:pkix_decode_cert(Cert, otp) || Cert <- CACerts],
+
+  case find(fun({_, Cert}) ->
+    check_cert(CACerts1, Cert)
+            end, Certs1) of
+    {ok, Trusted} ->
+      {trusted_ca, element(1, Trusted)};
+    _ ->
+      unknown_ca
+  end.
+
+extract_public_key_info(Cert) ->
+  ((Cert#'OTPCertificate'.tbsCertificate)#'OTPTBSCertificate'.subjectPublicKeyInfo).
+
+check_cert(CACerts, Cert) ->
+  lists:any(fun(CACert) ->
+    extract_public_key_info(CACert) == extract_public_key_info(Cert)
+            end, CACerts).
+
+-spec find(fun(), list()) -> {ok, term()} | error.
+find(Fun, [Head|Tail]) when is_function(Fun) ->
+  case Fun(Head) of
+    true ->
+      {ok, Head};
+    false ->
+      find(Fun, Tail)
+  end;
+find(_Fun, []) ->
+  error.
 
 %% @doc filter a proplists and only keep allowed keys
 -spec filter_options([{atom(), any()} | {raw, any(), any(), any()}],
@@ -65,7 +131,7 @@ maybe_apply_defaults([OptName | Rest], Options) ->
     true ->
       maybe_apply_defaults(Rest, Options);
     false ->
-      {ok, Default} = application:get_env(hackney, OptName),
+      {ok, Default} = application:get_env(gun, OptName),
       maybe_apply_defaults(Rest, [{OptName, Default} | Options])
   end.
 
@@ -90,7 +156,7 @@ is_ipv6(Host) ->
   end.
 
 privdir() ->
-  case code:priv_dir(hackney) of
+  case code:priv_dir(gun) of
     {error, _} ->
       %% try to get relative priv dir. useful for tests.
       EbinDir = filename:dirname(code:which(?MODULE)),
@@ -98,16 +164,6 @@ privdir() ->
       filename:join(AppPath, "priv");
     Dir -> Dir
   end.
-
-mod_metrics() ->
-  case application:get_env(hackney, mod_metrics) of
-    {ok, folsom} -> metrics_folsom;
-    {ok, exometer} -> metrics_exometer;
-    {ok, dummy} -> metrics_dummy;
-    {ok, Mod} -> Mod;
-    _ -> metrics_dummy
-  end.
-
 
 to_atom(V) when is_list(V) ->
   try
