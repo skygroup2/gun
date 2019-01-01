@@ -175,6 +175,7 @@
 	socket :: undefined | inet:socket() | ssl:sslsocket(),
 	transport :: module(),
 	proxy_handle :: module(),
+  proxy_opt = [],
 	messages :: {atom(), atom(), atom()},
 	protocol :: module(),
 	protocol_state :: any(),
@@ -650,17 +651,43 @@ init({Owner, Host, Port, Opts}) ->
 		tls -> gun_tls
 	end,
 
-	ProxyHandle = case maps:get(proxy, Opts, undefined) of
-	 	undefined ->
-			Transport;
+  {ProxyHandle, ProxyOpt, Host1, Port1} = case maps:get(proxy, Opts, undefined) of
+	 	Url when is_binary(Url) orelse is_list(Url) ->
+      Url1 = gun_url:parse_url(Url),
+      #{host := ProxyHost, port := ProxyPort} = gun_url:normalize(Url1),
+      {ProxyUser, ProxyPass} = maps:get(proxy_auth, Opts, {undefined, undefined}),
+      PO = [{connect_host, Host}, {connect_port, Port}, {connect_transport, Transport},
+        {connect_user, ProxyUser}, {connect_pass, ProxyPass}, binary, {active, false}],
+      {gun_http_proxy, PO, ProxyHost, ProxyPort};
+    {ProxyHost, ProxyPort} ->
+      {ProxyUser, ProxyPass} = maps:get(proxy_auth, Opts, {undefined, undefined}),
+      PO = [{connect_host, Host}, {connect_port, Port}, {connect_transport, Transport},
+        {connect_user, ProxyUser}, {connect_pass, ProxyPass}, binary, {active, false}],
+      {gun_http_proxy, PO, ProxyHost, ProxyPort};
+    {connect, ProxyHost, ProxyPort} ->
+      {ProxyUser, ProxyPass} = maps:get(proxy_auth, Opts, {undefined, undefined}),
+      PO = [{connect_host, Host}, {connect_port, Port}, {connect_transport, Transport},
+        {connect_user, ProxyUser}, {connect_pass, ProxyPass}, binary, {active, false}],
+      {gun_http_proxy, PO, ProxyHost, ProxyPort};
+    {socks5, ProxyHost, ProxyPort} ->
+      ProxyUser = maps:get(socks5_user, Opts, undefined),
+      ProxyPass = maps:get(socks5_pass, Opts, undefined),
+      ProxyResolve = maps:get(socks5_resolve, Opts, undefined),
+      PO = [{socks5_host, ProxyHost}, {socks5_port, ProxyPort}, {socks5_user, ProxyUser}, {socks5_pass, ProxyPass},
+        {socks5_resolve, ProxyResolve}, {socks5_transport, Transport}, binary, {active, false}],
+      {gun_socks5_proxy, PO, Host, Port};
+    {remote, RemoteHost, RemotePort} ->
+      RemoteProxy = maps:get(remote_proxy, Opts, []),
+      PO = [{remote_host, RemoteHost}, {remote_port, RemotePort}, {remote_proxy, RemoteProxy}, {remote_transport, Transport}, binary, {active, false}],
+      {gun_remote_proxy, PO, Host, Port};
 	 	_ ->
-			Transport
+      {Transport, [binary, {active, false}], Host, Port}
  	end,
 
 	OwnerRef = monitor(process, Owner),
 	State = #state{owner=Owner, owner_ref=OwnerRef,
-		host=Host, port=Port, origin_host=Host, origin_port=Port,
-		opts=Opts, transport=Transport, proxy_handle = ProxyHandle, messages=Transport:messages()},
+		host = Host1, port = Port1, origin_host=Host, origin_port=Port,
+		opts=Opts, transport=Transport, proxy_handle = ProxyHandle, proxy_opt = ProxyOpt, messages=Transport:messages()},
 	{ok, not_connected, State,
 		{next_event, internal, {retries, Retry}}}.
 
@@ -668,14 +695,14 @@ default_transport(443) -> tls;
 default_transport(_) -> tcp.
 
 not_connected(_, {retries, Retries},
-		State=#state{host=Host, port=Port, opts=Opts, transport=Transport, proxy_handle = ProxyHandle}) ->
+		State=#state{host=Host, port=Port, opts=Opts, transport=Transport, proxy_opt = ProxyOpt, proxy_handle = ProxyHandle}) ->
 	TransOpts0 = maps:get(transport_opts, Opts, []),
 	TransOpts1 = case Transport of
 		gun_tcp -> TransOpts0;
 		gun_tls -> ensure_alpn(maps:get(protocols, Opts, [http2, http]), TransOpts0)
 	end,
 
-	TransOpts = [binary, {active, false}|TransOpts1],
+	TransOpts = ProxyOpt ++ TransOpts1,
 	ConnectTimeout = maps:get(connect_timeout, Opts, infinity),
 	case ProxyHandle:connect(Host, Port, TransOpts, ConnectTimeout) of
 		{ok, Socket} when Transport =:= gun_tcp ->
