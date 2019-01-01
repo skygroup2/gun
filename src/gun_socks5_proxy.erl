@@ -49,10 +49,8 @@ connect(Host, Port, Opts, Timeout) when is_list(Host), is_integer(Port),
   Transport = proplists:get_value(socks5_transport, Opts),
 
   %% filter connection options
-  AcceptedOpts =  [linger, nodelay, send_timeout,
-    send_timeout_close, raw, inet6, ip],
-  BaseOpts = [binary, {active, false}, {packet, 0}, {keepalive,  true},
-    {nodelay, true}],
+  AcceptedOpts =  [linger, nodelay, send_timeout, send_timeout_close, raw, inet6, ip],
+  BaseOpts = [binary, {active, false}, {packet, 0}, {keepalive,  true}, {nodelay, true}],
   ConnectOpts = gun_util:filter_options(Opts, AcceptedOpts, BaseOpts),
 
   %% connect to the socks 5 proxy
