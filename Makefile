@@ -14,7 +14,7 @@ LOCAL_DEPS = ssl
 
 DEPS = cowlib idna
 dep_cowlib = git https://github.com/ninenines/cowlib master
-dep_idna =  hex 6.0.0
+dep_idna =  git https://github.com/benoitc/erlang-idna 6.0.0
 
 DOC_DEPS = asciideck
 
