@@ -173,6 +173,7 @@
 	opts :: opts(),
 	keepalive_ref :: undefined | reference(),
 	socket :: undefined | inet:socket() | ssl:sslsocket(),
+  socket_t :: tuple(),
 	transport :: module(),
 	proxy_handle :: module(),
   proxy_opt = [],
@@ -220,6 +221,10 @@ do_open(Host, Port, Opts0) ->
 
 check_options([]) ->
 	ok;
+check_options([{proxy, Proxy}|Opts]) when is_list(Proxy) orelse is_binary(Proxy) orelse is_tuple(Proxy) ->
+	check_options(Opts);
+check_options([{proxy_auth, ProxyAuth}|Opts]) when is_tuple(ProxyAuth) ->
+	check_options(Opts);
 check_options([{connect_timeout, infinity}|Opts]) ->
 	check_options(Opts);
 check_options([{connect_timeout, T}|Opts]) when is_integer(T), T >= 0 ->
@@ -271,6 +276,9 @@ check_options([{ws_opts, ProtoOpts}|Opts]) when is_map(ProtoOpts) ->
 	end;
 check_options([Opt|_]) ->
 	{error, {options, Opt}}.
+
+normalize_socket({_Transport, Socket}) -> Socket;
+normalize_socket(Socket) -> Socket.
 
 consider_tracing(ServerPid, #{trace := true}) ->
 	dbg:start(),
@@ -655,23 +663,38 @@ init({Owner, Host, Port, Opts}) ->
 	 	Url when is_binary(Url) orelse is_list(Url) ->
       Url1 = gun_url:parse_url(Url),
       #{host := ProxyHost, port := ProxyPort} = gun_url:normalize(Url1),
-      {ProxyUser, ProxyPass} = maps:get(proxy_auth, Opts, {undefined, undefined}),
+      {ProxyUser, ProxyPass} =
+        case maps:get(proxy_auth, Opts, nil) of
+          {U, P} -> {U, P};
+          _ -> {undefined, undefined}
+        end,
       PO = [{connect_host, Host}, {connect_port, Port}, {connect_transport, Transport},
         {connect_user, ProxyUser}, {connect_pass, ProxyPass}, binary, {active, false}],
       {gun_http_proxy, PO, ProxyHost, ProxyPort};
     {ProxyHost, ProxyPort} ->
-      {ProxyUser, ProxyPass} = maps:get(proxy_auth, Opts, {undefined, undefined}),
+      {ProxyUser, ProxyPass} =
+        case maps:get(proxy_auth, Opts, nil) of
+          {U, P} -> {U, P};
+          _ -> {undefined, undefined}
+        end,
       PO = [{connect_host, Host}, {connect_port, Port}, {connect_transport, Transport},
         {connect_user, ProxyUser}, {connect_pass, ProxyPass}, binary, {active, false}],
       {gun_http_proxy, PO, ProxyHost, ProxyPort};
     {connect, ProxyHost, ProxyPort} ->
-      {ProxyUser, ProxyPass} = maps:get(proxy_auth, Opts, {undefined, undefined}),
+      {ProxyUser, ProxyPass} =
+        case maps:get(proxy_auth, Opts, nil) of
+          {U, P} -> {U, P};
+          _ -> {undefined, undefined}
+        end,
       PO = [{connect_host, Host}, {connect_port, Port}, {connect_transport, Transport},
         {connect_user, ProxyUser}, {connect_pass, ProxyPass}, binary, {active, false}],
       {gun_http_proxy, PO, ProxyHost, ProxyPort};
     {socks5, ProxyHost, ProxyPort} ->
-      ProxyUser = maps:get(socks5_user, Opts, undefined),
-      ProxyPass = maps:get(socks5_pass, Opts, undefined),
+      {ProxyUser, ProxyPass} =
+        case maps:get(proxy_auth, Opts, nil) of
+          {U, P} -> {U, P};
+          _ -> {undefined, undefined}
+        end,
       ProxyResolve = maps:get(socks5_resolve, Opts, undefined),
       PO = [{socks5_host, ProxyHost}, {socks5_port, ProxyPort}, {socks5_user, ProxyUser}, {socks5_pass, ProxyPass},
         {socks5_resolve, ProxyResolve}, {socks5_transport, Transport}, binary, {active, false}],
@@ -746,9 +769,9 @@ connected(internal, {connected, Socket, Protocol},
 		gun_http2 -> http2_opts
 	end,
 	ProtoOpts = maps:get(ProtoOptsKey, Opts, #{}),
-	ProtoState = Protocol:init(Owner, Socket, Transport, ProtoOpts),
+	ProtoState = Protocol:init(Owner, normalize_socket(Socket), Transport, ProtoOpts),
 	Owner ! {gun_up, self(), Protocol:name()},
-	{keep_state, keepalive_timeout(active(State#state{socket=Socket,
+	{keep_state, keepalive_timeout(active(State#state{socket = normalize_socket(Socket), socket_t = Socket,
 		protocol=Protocol, protocol_state=ProtoState}))};
 %% Socket events.
 connected(info, {OK, Socket, Data}, State=#state{socket=Socket, messages={OK, _, _},
@@ -851,15 +874,15 @@ handle_common(cast, {shutdown, Owner}, _, #state{owner=Owner}) ->
 	stop;
 %% We stop when the owner is gone.
 handle_common(info, {'DOWN', OwnerRef, process, Owner, Reason}, _, #state{
-	owner=Owner, owner_ref=OwnerRef, socket=Socket, proxy_handle = ProxyHandle,
+	owner=Owner, owner_ref=OwnerRef, socket_t = SocketT, proxy_handle = ProxyHandle,
 	protocol=Protocol, protocol_state=ProtoState}) ->
 	_ = case Protocol of
 		undefined -> ok;
 		_ -> Protocol:close(owner_gone, ProtoState)
 	end,
-	_ = case Socket of
+	_ = case SocketT of
 		undefined -> ok;
-		_ -> ProxyHandle:close(Socket)
+		_ -> ProxyHandle:close(SocketT)
 	end,
 	owner_gone(Reason);
 handle_common({call, From}, _, _, _) ->
@@ -916,11 +939,11 @@ commands([{switch_protocol, Protocol, _ProtoState0}|Tail],
 	commands(Tail, keepalive_timeout(State#state{protocol=Protocol, protocol_state=ProtoState})).
 
 disconnect(State=#state{owner=Owner, opts=Opts,
-		socket=Socket, proxy_handle = ProxyHandle,
+		socket_t = SocketT, proxy_handle = ProxyHandle,
 		protocol=Protocol, protocol_state=ProtoState}, Reason) ->
 	Protocol:close(Reason, ProtoState),
 	%% @todo Need a special state for orderly shutdown of a connection.
-	ProxyHandle:close(Socket),
+	ProxyHandle:close(SocketT),
 	%% We closed the socket, discard any remaining socket events.
 	disconnect_flush(State),
 	%% @todo Stop keepalive timeout, flush message.
@@ -941,8 +964,8 @@ disconnect_flush(State=#state{socket=Socket, messages={OK, Closed, Error}}) ->
 		ok
 	end.
 
-active(State=#state{socket=Socket, proxy_handle = ProxyHandle}) ->
-	ProxyHandle:setopts(Socket, [{active, once}]),
+active(State=#state{socket_t = SocketT, proxy_handle = ProxyHandle}) ->
+	ProxyHandle:setopts(SocketT, [{active, once}]),
 	State.
 
 keepalive_timeout(State=#state{opts=Opts, protocol=Protocol}) ->
