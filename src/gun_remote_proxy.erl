@@ -26,8 +26,17 @@
 -type socks5_socket() :: {atom(), inet:socket()}.
 -export_type([socks5_socket/0]).
 
+-ifdef(no_proxy_sni_support).
+
+ssl_opts(Host, Opts) ->
+  gun_util:ssl_opts(Host, Opts).
+
+-else.
+
 ssl_opts(Host, Opts) ->
   [{server_name_indication, Host} | gun_util:ssl_opts(Host,Opts)].
+
+-endif.
 
 %% @doc Atoms used to identify messages in {active, once | true} mode.
 messages({gun_tls, _}) ->
