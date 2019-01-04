@@ -21,7 +21,7 @@
 
 %% @doc ssl_opts
 ssl_opts(Host, Options) ->
-  ssl_opts(Host, Options, [insecure, alpn_advertised_protocols, client_preferred_next_protocols], []).
+  ssl_opts(Host, Options, [insecure, client_preferred_next_protocols, alpn_advertised_protocols, versions], []).
 
 ssl_opts(_Host, _Options, [], Acc) ->
   Acc;
@@ -52,7 +52,7 @@ ssl_opts(Host, Options, [K| RO], Acc) ->
     false ->
       ssl_opts(Host, Options, RO, Acc);
     _ ->
-      ssl_opts(Host, Options, RO, [V| Acc])
+      ssl_opts(Host, Options, RO, [{K, V}| Acc])
   end.
 
 %% code from rebar3 undert BSD license
