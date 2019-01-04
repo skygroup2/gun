@@ -63,7 +63,7 @@ connect(ProxyHost, ProxyPort, Opts, Timeout)
           %% if we are connecting to a remote https source, we
           %% upgrade the connection socket to handle SSL.
           case Transport of
-            gun_ssl ->
+            gun_tls ->
               SSLOpts = ssl_opts(Host, Opts),
               %% upgrade the tcp connection
               case ssl:connect(Socket, SSLOpts) of
