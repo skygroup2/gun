@@ -744,7 +744,7 @@ not_connected(_, {retries, Retries},
 			{next_state, connected, State,
 				{next_event, internal, {connected, Socket, Protocol}}};
 		{ok, Socket} when Transport =:= gun_tls ->
-			Protocol = case ssl:negotiated_protocol(Socket) of
+			Protocol = case ssl:negotiated_protocol(normalize_socket(Socket)) of
 				{ok, <<"h2">>} -> gun_http2;
 				_ -> gun_http
 			end,
