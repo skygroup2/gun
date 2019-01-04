@@ -225,6 +225,8 @@ check_options([{proxy, Proxy}|Opts]) when is_list(Proxy) orelse is_binary(Proxy)
 	check_options(Opts);
 check_options([{proxy_auth, ProxyAuth}|Opts]) when is_tuple(ProxyAuth) ->
 	check_options(Opts);
+check_options([{insecure, Insecure}| Opts]) when is_boolean(Insecure) ->
+	check_options(Opts);
 check_options([{connect_timeout, infinity}|Opts]) ->
 	check_options(Opts);
 check_options([{connect_timeout, T}|Opts]) when is_integer(T), T >= 0 ->
@@ -668,8 +670,9 @@ init({Owner, Host, Port, Opts}) ->
           {U, P} -> {U, P};
           _ -> {undefined, undefined}
         end,
+			Insecure = maps:get(insecure, Opts, true),
       PO = [{connect_host, Host}, {connect_port, Port}, {connect_transport, Transport},
-        {connect_user, ProxyUser}, {connect_pass, ProxyPass}, binary, {active, false}],
+        {connect_user, ProxyUser}, {connect_pass, ProxyPass}, {insecure, Insecure}, binary, {active, false}],
       {gun_http_proxy, PO, ProxyHost, ProxyPort};
     {ProxyHost, ProxyPort} ->
       {ProxyUser, ProxyPass} =
@@ -677,8 +680,9 @@ init({Owner, Host, Port, Opts}) ->
           {U, P} -> {U, P};
           _ -> {undefined, undefined}
         end,
+			Insecure = maps:get(insecure, Opts, true),
       PO = [{connect_host, Host}, {connect_port, Port}, {connect_transport, Transport},
-        {connect_user, ProxyUser}, {connect_pass, ProxyPass}, binary, {active, false}],
+        {connect_user, ProxyUser}, {connect_pass, ProxyPass}, {insecure, Insecure}, binary, {active, false}],
       {gun_http_proxy, PO, ProxyHost, ProxyPort};
     {connect, ProxyHost, ProxyPort} ->
       {ProxyUser, ProxyPass} =
@@ -686,8 +690,9 @@ init({Owner, Host, Port, Opts}) ->
           {U, P} -> {U, P};
           _ -> {undefined, undefined}
         end,
+			Insecure = maps:get(insecure, Opts, true),
       PO = [{connect_host, Host}, {connect_port, Port}, {connect_transport, Transport},
-        {connect_user, ProxyUser}, {connect_pass, ProxyPass}, binary, {active, false}],
+        {connect_user, ProxyUser}, {connect_pass, ProxyPass}, {insecure, Insecure}, binary, {active, false}],
       {gun_http_proxy, PO, ProxyHost, ProxyPort};
     {socks5, ProxyHost, ProxyPort} ->
       {ProxyUser, ProxyPass} =
@@ -695,13 +700,16 @@ init({Owner, Host, Port, Opts}) ->
           {U, P} -> {U, P};
           _ -> {undefined, undefined}
         end,
+			Insecure = maps:get(insecure, Opts, true),
       ProxyResolve = maps:get(socks5_resolve, Opts, undefined),
       PO = [{socks5_host, ProxyHost}, {socks5_port, ProxyPort}, {socks5_user, ProxyUser}, {socks5_pass, ProxyPass},
-        {socks5_resolve, ProxyResolve}, {socks5_transport, Transport}, binary, {active, false}],
+        {socks5_resolve, ProxyResolve}, {socks5_transport, Transport}, {insecure, Insecure}, binary, {active, false}],
       {gun_socks5_proxy, PO, Host, Port};
     {remote, RemoteHost, RemotePort} ->
       RemoteProxy = maps:get(remote_proxy, Opts, []),
-      PO = [{remote_host, RemoteHost}, {remote_port, RemotePort}, {remote_proxy, RemoteProxy}, {remote_transport, Transport}, binary, {active, false}],
+			Insecure = maps:get(insecure, Opts, true),
+      PO = [{remote_host, RemoteHost}, {remote_port, RemotePort}, {remote_proxy, RemoteProxy}, {remote_transport, Transport},
+				{insecure, Insecure}, binary, {active, false}],
       {gun_remote_proxy, PO, Host, Port};
 	 	_ ->
       {Transport, [binary, {active, false}], Host, Port}

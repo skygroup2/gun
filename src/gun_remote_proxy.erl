@@ -30,7 +30,7 @@ ssl_opts(Host, Opts) ->
   [{server_name_indication, Host} | gun_util:ssl_opts(Host,Opts)].
 
 %% @doc Atoms used to identify messages in {active, once | true} mode.
-messages({gun_ssl, _}) ->
+messages({gun_tls, _}) ->
   {ssl, ssl_closed, ssl_error};
 messages({_, _}) ->
   {tcp, tcp_closed, tcp_error}.
@@ -58,7 +58,7 @@ connect(Host, Port, Opts, Timeout) when is_list(Host), is_integer(Port),
       case do_handshake(Socket, Host, Port, Opts) of
         ok ->
           case Transport of
-            gun_ssl ->
+            gun_tls ->
               SSLOpts = ssl_opts(Host, Opts),
               %% upgrade the tcp connection
               case ssl:connect(Socket, SSLOpts) of
