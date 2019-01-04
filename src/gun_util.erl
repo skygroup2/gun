@@ -21,31 +21,38 @@
 
 %% @doc ssl_opts
 ssl_opts(Host, Options) ->
-  case proplists:get_value(ssl_options, Options) of
-    undefined ->
-      ssl_opts_1(Host, Options);
-    [] ->
-      ssl_opts_1(Host, Options);
-    SSLOpts ->
-      SSLOpts
-  end.
+  ssl_opts(Host, Options, [insecure, alpn_advertised_protocols, client_preferred_next_protocols], []).
 
-ssl_opts_1(Host, Options) ->
+ssl_opts(_Host, _Options, [], Acc) ->
+  Acc;
+
+ssl_opts(Host, Options, [insecure| RO], Acc) ->
   Insecure =  proplists:get_value(insecure, Options, false),
   CACerts = certifi:cacerts(),
-  case Insecure of
-    true ->
-      [{verify, verify_none}];
+  Acc1 =
+    case Insecure of
+      true ->
+        [{verify, verify_none}];
+      false ->
+        VerifyFun = {
+          fun ssl_verify_hostname:verify_fun/3,
+          [{check_hostname, Host}]
+         },
+        [{verify, verify_peer},
+         {depth, 99},
+         {cacerts, CACerts},
+         {partial_chain, fun partial_chain/1},
+         {verify_fun, VerifyFun}| Acc]
+    end,
+  ssl_opts(Host, Options, RO, Acc1);
+
+ssl_opts(Host, Options, [K| RO], Acc) ->
+  V =  proplists:get_value(K, Options, false),
+  case V of
     false ->
-      VerifyFun = {
-        fun ssl_verify_hostname:verify_fun/3,
-        [{check_hostname, Host}]
-       },
-      [{verify, verify_peer},
-       {depth, 99},
-       {cacerts, CACerts},
-       {partial_chain, fun partial_chain/1},
-       {verify_fun, VerifyFun}]
+      ssl_opts(Host, Options, RO, Acc);
+    _ ->
+      ssl_opts(Host, Options, RO, [V| Acc])
   end.
 
 %% code from rebar3 undert BSD license
