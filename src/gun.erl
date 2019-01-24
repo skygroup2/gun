@@ -192,6 +192,8 @@ open(Host, Port) ->
 
 -spec open(inet:hostname() | inet:ip_address(), inet:port_number(), opts())
 	-> {ok, pid()} | {error, any()}.
+open(Host, Port, Opts) when is_binary(Host) ->
+	do_open(binary_to_list(Host), Port, Opts);
 open(Host, Port, Opts) when is_list(Host); is_atom(Host); is_tuple(Host) ->
 	do_open(Host, Port, Opts).
 
