@@ -232,12 +232,12 @@ check_options([{proxy, Proxy}|Opts]) when is_list(Proxy) orelse is_binary(Proxy)
 	check_options(Opts);
 check_options([{proxy_auth, ProxyAuth}|Opts]) when is_tuple(ProxyAuth) ->
 	check_options(Opts);
-check_options([{remote_host, Host}|Opts]) when is_tuple(Host) ->
-	check_options(Opts);
-check_options([{remote_port, Port}|Opts]) when is_integer(Port), Port > 0, Port < 65535 ->
-	check_options(Opts);
-check_options([{remote_proxy, Proxy}|Opts]) when is_list(Proxy) orelse is_map(Proxy) ->
-	check_options(Opts);
+%%check_options([{remote_host, Host}|Opts]) when is_tuple(Host) ->
+%%	check_options(Opts);
+%%check_options([{remote_port, Port}|Opts]) when is_integer(Port), Port > 0, Port < 65535 ->
+%%	check_options(Opts);
+%%check_options([{remote_proxy, Proxy}|Opts]) when is_list(Proxy) orelse is_map(Proxy) ->
+%%	check_options(Opts);
 check_options([{insecure, Insecure}| Opts]) when is_boolean(Insecure) ->
 	check_options(Opts);
 check_options([{connect_timeout, infinity}|Opts]) ->
