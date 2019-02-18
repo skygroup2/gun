@@ -1,4 +1,4 @@
-%% Copyright (c) 2018, Loïc Hoguin <essen@ninenines.eu>
+%% Copyright (c) 2018-2019, Loïc Hoguin <essen@ninenines.eu>
 %%
 %% Permission to use, copy, modify, and/or distribute this software for any
 %% purpose with or without fee is hereby granted, provided that the above
@@ -26,12 +26,16 @@ all() ->
 
 init_per_suite(Config) ->
 	case os:getenv("H2SPECD") of
-		false -> skip;
-		_ ->
-			%% We ensure that SASL is started for this test suite
-			%% to have the crash reports in the CT logs.
-			{ok, Apps} = application:ensure_all_started(sasl),
-			[{sasl_started, Apps =/= []}|Config]
+		false -> {skip, "$H2SPECD isn't set."};
+		H2specd ->
+			case filelib:is_file(H2specd) of
+				false -> {skip, "$H2SPECD file not found."};
+				true ->
+					%% We ensure that SASL is started for this test suite
+					%% to have the crash reports in the CT logs.
+					{ok, Apps} = application:ensure_all_started(sasl),
+					[{sasl_started, Apps =/= []}|Config]
+			end
 	end.
 
 end_per_suite(Config) ->

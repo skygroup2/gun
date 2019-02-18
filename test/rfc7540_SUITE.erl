@@ -1,4 +1,4 @@
-%% Copyright (c) 2018, Loïc Hoguin <essen@ninenines.eu>
+%% Copyright (c) 2018-2019, Loïc Hoguin <essen@ninenines.eu>
 %%
 %% Permission to use, copy, modify, and/or distribute this software for any
 %% purpose with or without fee is hereby granted, provided that the above
@@ -17,58 +17,63 @@
 -compile(nowarn_export_all).
 
 -import(ct_helper, [doc/1]).
+-import(gun_test, [init_origin/3]).
+-import(gun_test, [receive_from/1]).
 
 all() ->
 	ct_helper:all(?MODULE).
 
-%% Server helpers.
-
-do_origin_start(Fun) ->
-	Self = self(),
-	Pid = spawn_link(fun() -> do_origin_init_tcp(Self, Fun) end),
-	Port = do_receive(Pid),
-	{ok, Pid, Port}.
-
-do_origin_init_tcp(Parent, Fun) ->
-	{ok, ListenSocket} = gen_tcp:listen(0, [binary, {active, false}]),
-	{ok, {_, Port}} = inet:sockname(ListenSocket),
-	Parent ! {self(), Port},
-	{ok, ClientSocket} = gen_tcp:accept(ListenSocket, 5000),
-	do_handshake(ClientSocket, gen_tcp),
-	Fun(Parent, ClientSocket, gen_tcp).
-
-do_handshake(Socket, Transport) ->
-	%% Send a valid preface.
-	ok = Transport:send(Socket, cow_http2:settings(#{})),
-	%% Receive the fixed sequence from the preface.
-	Preface = <<"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n">>,
-	{ok, Preface} = Transport:recv(Socket, byte_size(Preface), 5000),
-	%% Receive the SETTINGS from the preface.
-	{ok, <<Len:24>>} = Transport:recv(Socket, 3, 1000),
-	{ok, <<4:8, 0:40, _:Len/binary>>} = Transport:recv(Socket, 6 + Len, 1000),
-	%% Send the SETTINGS ack.
-	ok = Transport:send(Socket, cow_http2:settings_ack()),
-	%% Receive the SETTINGS ack.
-	{ok, <<0:24, 4:8, 1:8, 0:32>>} = Transport:recv(Socket, 9, 1000),
-	ok.
-
-do_receive(Pid) ->
-	do_receive(Pid, 1000).
-
-do_receive(Pid, Timeout) ->
-	receive
-		{Pid, Msg} ->
-			Msg
-	after Timeout ->
-		error(timeout)
-	end.
-
 %% Tests.
+
+authority_default_port_http(_) ->
+	doc("The default port for http should not be sent in "
+		"the :authority pseudo-header. (RFC7540 3, RFC7230 2.7.1)"),
+	do_authority_port(tcp, 80, <<>>).
+
+authority_default_port_https(_) ->
+	doc("The default port for https should not be sent in "
+		"the :authority pseudo-header. (RFC7540 3, RFC7230 2.7.2)"),
+	do_authority_port(tls, 443, <<>>).
+
+authority_other_port_http(_) ->
+	doc("Non-default ports for http must be sent in "
+		"the :authority pseudo-header. (RFC7540 3, RFC7230 2.7.1)"),
+	do_authority_port(tcp, 443, <<":443">>).
+
+authority_other_port_https(_) ->
+	doc("Non-default ports for https must be sent in "
+		"the :authority pseudo-header. (RFC7540 3, RFC7230 2.7.2)"),
+	do_authority_port(tls, 80, <<":80">>).
+
+do_authority_port(Transport0, DefaultPort, AuthorityHeaderPort) ->
+	{ok, OriginPid, OriginPort} = init_origin(Transport0, http2, fun(Parent, Socket, Transport) ->
+		%% Receive the HEADERS frame and send the headers decoded.
+		{ok, <<Len:24, 1:8, _:8, 1:32>>} = Transport:recv(Socket, 9, 1000),
+		{ok, ReqHeadersBlock} = Transport:recv(Socket, Len, 1000),
+		{ReqHeaders, _} = cow_hpack:decode(ReqHeadersBlock),
+		Parent ! {self(), ReqHeaders}
+	end),
+	{ok, ConnPid} = gun:open("localhost", OriginPort, #{
+		transport => Transport0,
+		protocols => [http2]
+	}),
+	{ok, http2} = gun:await_up(ConnPid),
+	%% Change the origin's port in the state to trigger the default port behavior.
+	_ = sys:replace_state(ConnPid, fun({StateName, StateData}) ->
+		{StateName, setelement(7, StateData, DefaultPort)}
+	end, 5000),
+	%% Confirm the default port is not sent in the request.
+	timer:sleep(100), %% Give enough time for the handshake to fully complete.
+	_ = gun:get(ConnPid, "/"),
+	ReqHeaders = receive_from(OriginPid),
+	{_, <<"localhost", Rest/bits>>} = lists:keyfind(<<":authority">>, 1, ReqHeaders),
+	AuthorityHeaderPort = Rest,
+	gun:close(ConnPid).
 
 headers_priority_flag(_) ->
 	doc("HEADERS frames may include a PRIORITY flag indicating "
 		"that stream dependency information is attached. (RFC7540 6.2)"),
-	{ok, _, Port} = do_origin_start(fun(_, Socket, Transport) ->
+	{ok, _, Port} = init_origin(tcp, http2, fun(_, Socket, Transport) ->
 		%% Receive a HEADERS frame.
 		{ok, <<_:24, 1:8, _:8, 1:32>>} = Transport:recv(Socket, 9, 1000),
 		%% Send a HEADERS frame with PRIORITY back.
