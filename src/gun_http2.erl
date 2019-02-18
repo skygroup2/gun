@@ -1,4 +1,4 @@
-%% Copyright (c) 2016-2018, Loïc Hoguin <essen@ninenines.eu>
+%% Copyright (c) 2016-2019, Loïc Hoguin <essen@ninenines.eu>
 %%
 %% Permission to use, copy, modify, and/or distribute this software for any
 %% purpose with or without fee is hereby granted, provided that the above
@@ -20,10 +20,11 @@
 -export([handle/2]).
 -export([close/2]).
 -export([keepalive/1]).
--export([request/8]).
+-export([headers/8]).
 -export([request/9]).
 -export([data/5]).
 -export([cancel/3]).
+-export([stream_info/2]).
 -export([down/1]).
 
 -record(stream, {
@@ -63,7 +64,7 @@ do_check_options([]) ->
 do_check_options([Opt={content_handlers, Handlers}|Opts]) ->
 	case gun_content_handler:check_option(Handlers) of
 		ok -> do_check_options(Opts);
-		error -> {error, {options, {http, Opt}}}
+		error -> {error, {options, {http2, Opt}}}
 	end;
 do_check_options([{keepalive, infinity}|Opts]) ->
 	do_check_options(Opts);
@@ -240,19 +241,14 @@ keepalive(State=#http2_state{socket=Socket, transport=Transport}) ->
 	Transport:send(Socket, cow_http2:ping(0)),
 	State.
 
-request(State=#http2_state{socket=Socket, transport=Transport,
+headers(State=#http2_state{socket=Socket, transport=Transport,
 		http2_machine=HTTP2Machine0, streams=Streams},
 		StreamRef, ReplyTo, Method, Host, Port, Path, Headers0) ->
-	IsFin0 = case (false =/= lists:keyfind(<<"content-type">>, 1, Headers0))
-			orelse (false =/= lists:keyfind(<<"content-length">>, 1, Headers0)) of
-		true -> nofin;
-		false -> fin
-	end,
 	{ok, StreamID, HTTP2Machine1} = cow_http2_machine:init_stream(
 		iolist_to_binary(Method), HTTP2Machine0),
 	{ok, PseudoHeaders, Headers} = prepare_headers(State, Method, Host, Port, Path, Headers0),
 	{ok, IsFin, HeaderBlock, HTTP2Machine} = cow_http2_machine:prepare_headers(
-		StreamID, HTTP2Machine1, IsFin0, PseudoHeaders, Headers),
+		StreamID, HTTP2Machine1, nofin, PseudoHeaders, Headers),
 	Transport:send(Socket, cow_http2:headers(StreamID, IsFin, HeaderBlock)),
 	Stream = #stream{id=StreamID, ref=StreamRef, reply_to=ReplyTo},
 	State#http2_state{http2_machine=HTTP2Machine, streams=[Stream|Streams]}.
@@ -273,14 +269,9 @@ request(State=#http2_state{socket=Socket, transport=Transport,
 		streams=[Stream|Streams]}, StreamID, fin, Body).
 
 prepare_headers(#http2_state{transport=Transport}, Method, Host0, Port, Path, Headers0) ->
-	Host1 = case Host0 of
-		{local, _SocketPath} -> <<>>;
-		Tuple when is_tuple(Tuple) -> inet:ntoa(Tuple);
-		_ -> Host0
-	end,
 	Authority = case lists:keyfind(<<"host">>, 1, Headers0) of
 		{_, Host} -> Host;
-		_ -> [Host1, $:, integer_to_binary(Port)]
+		_ -> gun_http:host_header(Transport, Host0, Port)
 	end,
 	%% @todo We also must remove any header found in the connection header.
 	Headers =
@@ -379,6 +370,18 @@ cancel(State=#http2_state{socket=Socket, transport=Transport,
 			delete_stream(State#http2_state{http2_machine=HTTP2Machine}, StreamID);
 		false ->
 			error_stream_not_found(State, StreamRef, ReplyTo)
+	end.
+
+stream_info(State, StreamRef) ->
+	case get_stream_by_ref(State, StreamRef) of
+		#stream{reply_to=ReplyTo} ->
+			{ok, #{
+				ref => StreamRef,
+				reply_to => ReplyTo,
+				state => running
+			}};
+		false ->
+			{ok, undefined}
 	end.
 
 %% @todo Add unprocessed streams when GOAWAY handling is done.

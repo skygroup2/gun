@@ -33,7 +33,7 @@ distclean: clean
 docs:
 	@$(REBAR3) edoc
 
-test: 
+test:
 	@$(REBAR3) do ct, cover
 
 release: test

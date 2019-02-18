@@ -1,4 +1,4 @@
-%% Copyright (c) 2013-2018, Loïc Hoguin <essen@ninenines.eu>
+%% Copyright (c) 2013-2019, Loïc Hoguin <essen@ninenines.eu>
 %%
 %% Permission to use, copy, modify, and/or distribute this software for any
 %% purpose with or without fee is hereby granted, provided that the above
@@ -49,7 +49,10 @@
 -export([put/3]).
 -export([put/4]).
 -export([put/5]).
--export([request/4]).
+
+%% Generic requests interface.
+-export([headers/4]).
+-export([headers/5]).
 -export([request/5]).
 -export([request/6]).
 
@@ -75,8 +78,9 @@
 %% Flushing gun messages.
 -export([flush/1]).
 
-%% Cancelling a stream.
+%% Streams.
 -export([cancel/2]).
+-export([stream_info/2]).
 
 %% Websocket.
 -export([ws_upgrade/2]).
@@ -91,7 +95,9 @@
 -export([not_connected/3]).
 -export([connected/3]).
 
--type headers() :: [{binary(), iodata()}].
+-type req_headers() :: [{binary() | string() | atom(), iodata()}]
+	| #{binary() | string() | atom() => iodata()}.
+-export_type([req_headers/0]).
 
 -type ws_close_code() :: 1000..4999.
 -type ws_frame() :: close | ping | pong
@@ -179,8 +185,7 @@
   proxy_opt = [],
 	messages :: {atom(), atom(), atom()},
 	protocol :: module(),
-	protocol_state :: any(),
-	last_error :: any()
+	protocol_state :: any()
 }).
 
 %% Connection.
@@ -336,109 +341,141 @@ shutdown(ServerPid) ->
 
 -spec delete(pid(), iodata()) -> reference().
 delete(ServerPid, Path) ->
-	request(ServerPid, <<"DELETE">>, Path, []).
+	request(ServerPid, <<"DELETE">>, Path, [], <<>>).
 
--spec delete(pid(), iodata(), headers()) -> reference().
+-spec delete(pid(), iodata(), req_headers()) -> reference().
 delete(ServerPid, Path, Headers) ->
-	request(ServerPid, <<"DELETE">>, Path, Headers).
+	request(ServerPid, <<"DELETE">>, Path, Headers, <<>>).
 
--spec delete(pid(), iodata(), headers(), req_opts()) -> reference().
+-spec delete(pid(), iodata(), req_headers(), req_opts()) -> reference().
 delete(ServerPid, Path, Headers, ReqOpts) ->
 	request(ServerPid, <<"DELETE">>, Path, Headers, <<>>, ReqOpts).
 
 -spec get(pid(), iodata()) -> reference().
 get(ServerPid, Path) ->
-	request(ServerPid, <<"GET">>, Path, []).
+	request(ServerPid, <<"GET">>, Path, [], <<>>).
 
--spec get(pid(), iodata(), headers()) -> reference().
+-spec get(pid(), iodata(), req_headers()) -> reference().
 get(ServerPid, Path, Headers) ->
-	request(ServerPid, <<"GET">>, Path, Headers).
+	request(ServerPid, <<"GET">>, Path, Headers, <<>>).
 
--spec get(pid(), iodata(), headers(), req_opts()) -> reference().
+-spec get(pid(), iodata(), req_headers(), req_opts()) -> reference().
 get(ServerPid, Path, Headers, ReqOpts) ->
 	request(ServerPid, <<"GET">>, Path, Headers, <<>>, ReqOpts).
 
 -spec head(pid(), iodata()) -> reference().
 head(ServerPid, Path) ->
-	request(ServerPid, <<"HEAD">>, Path, []).
+	request(ServerPid, <<"HEAD">>, Path, [], <<>>).
 
--spec head(pid(), iodata(), headers()) -> reference().
+-spec head(pid(), iodata(), req_headers()) -> reference().
 head(ServerPid, Path, Headers) ->
-	request(ServerPid, <<"HEAD">>, Path, Headers).
+	request(ServerPid, <<"HEAD">>, Path, Headers, <<>>).
 
--spec head(pid(), iodata(), headers(), req_opts()) -> reference().
+-spec head(pid(), iodata(), req_headers(), req_opts()) -> reference().
 head(ServerPid, Path, Headers, ReqOpts) ->
 	request(ServerPid, <<"HEAD">>, Path, Headers, <<>>, ReqOpts).
 
 -spec options(pid(), iodata()) -> reference().
 options(ServerPid, Path) ->
-	request(ServerPid, <<"OPTIONS">>, Path, []).
+	request(ServerPid, <<"OPTIONS">>, Path, [], <<>>).
 
--spec options(pid(), iodata(), headers()) -> reference().
+-spec options(pid(), iodata(), req_headers()) -> reference().
 options(ServerPid, Path, Headers) ->
-	request(ServerPid, <<"OPTIONS">>, Path, Headers).
+	request(ServerPid, <<"OPTIONS">>, Path, Headers, <<>>).
 
--spec options(pid(), iodata(), headers(), req_opts()) -> reference().
+-spec options(pid(), iodata(), req_headers(), req_opts()) -> reference().
 options(ServerPid, Path, Headers, ReqOpts) ->
 	request(ServerPid, <<"OPTIONS">>, Path, Headers, <<>>, ReqOpts).
 
--spec patch(pid(), iodata(), headers()) -> reference().
+-spec patch(pid(), iodata(), req_headers()) -> reference().
 patch(ServerPid, Path, Headers) ->
-	request(ServerPid, <<"PATCH">>, Path, Headers).
+	headers(ServerPid, <<"PATCH">>, Path, Headers).
 
--spec patch(pid(), iodata(), headers(), iodata()) -> reference().
+-spec patch(pid(), iodata(), req_headers(), iodata() | req_opts()) -> reference().
+patch(ServerPid, Path, Headers, ReqOpts) when is_map(ReqOpts) ->
+	headers(ServerPid, <<"PATCH">>, Path, Headers, ReqOpts);
 patch(ServerPid, Path, Headers, Body) ->
 	request(ServerPid, <<"PATCH">>, Path, Headers, Body).
 
--spec patch(pid(), iodata(), headers(), iodata(), req_opts()) -> reference().
+-spec patch(pid(), iodata(), req_headers(), iodata(), req_opts()) -> reference().
 patch(ServerPid, Path, Headers, Body, ReqOpts) ->
 	request(ServerPid, <<"PATCH">>, Path, Headers, Body, ReqOpts).
 
--spec post(pid(), iodata(), headers()) -> reference().
+-spec post(pid(), iodata(), req_headers()) -> reference().
 post(ServerPid, Path, Headers) ->
-	request(ServerPid, <<"POST">>, Path, Headers).
+	headers(ServerPid, <<"POST">>, Path, Headers).
 
--spec post(pid(), iodata(), headers(), iodata()) -> reference().
+-spec post(pid(), iodata(), req_headers(), iodata() | req_opts()) -> reference().
+post(ServerPid, Path, Headers, ReqOpts) when is_map(ReqOpts) ->
+	headers(ServerPid, <<"POST">>, Path, Headers, ReqOpts);
 post(ServerPid, Path, Headers, Body) ->
 	request(ServerPid, <<"POST">>, Path, Headers, Body).
 
--spec post(pid(), iodata(), headers(), iodata(), req_opts()) -> reference().
+-spec post(pid(), iodata(), req_headers(), iodata(), req_opts()) -> reference().
 post(ServerPid, Path, Headers, Body, ReqOpts) ->
 	request(ServerPid, <<"POST">>, Path, Headers, Body, ReqOpts).
 
--spec put(pid(), iodata(), headers()) -> reference().
+-spec put(pid(), iodata(), req_headers()) -> reference().
 put(ServerPid, Path, Headers) ->
-	request(ServerPid, <<"PUT">>, Path, Headers).
+	headers(ServerPid, <<"PUT">>, Path, Headers).
 
--spec put(pid(), iodata(), headers(), iodata()) -> reference().
+-spec put(pid(), iodata(), req_headers(), iodata() | req_opts()) -> reference().
+put(ServerPid, Path, Headers, ReqOpts) when is_map(ReqOpts) ->
+	headers(ServerPid, <<"PUT">>, Path, Headers, ReqOpts);
 put(ServerPid, Path, Headers, Body) ->
 	request(ServerPid, <<"PUT">>, Path, Headers, Body).
 
--spec put(pid(), iodata(), headers(), iodata(), req_opts()) -> reference().
+-spec put(pid(), iodata(), req_headers(), iodata(), req_opts()) -> reference().
 put(ServerPid, Path, Headers, Body, ReqOpts) ->
 	request(ServerPid, <<"PUT">>, Path, Headers, Body, ReqOpts).
 
--spec request(pid(), iodata(), iodata(), headers()) -> reference().
-request(ServerPid, Method, Path, Headers) ->
-	request(ServerPid, Method, Path, Headers, <<>>, #{}).
+%% Generic requests interface.
 
--spec request(pid(), iodata(), iodata(), headers(), iodata()) -> reference().
+-spec headers(pid(), iodata(), iodata(), req_headers()) -> reference().
+headers(ServerPid, Method, Path, Headers) ->
+	headers(ServerPid, Method, Path, Headers, #{}).
+
+-spec headers(pid(), iodata(), iodata(), req_headers(), req_opts()) -> reference().
+headers(ServerPid, Method, Path, Headers, ReqOpts) ->
+	StreamRef = make_ref(),
+	ReplyTo = maps:get(reply_to, ReqOpts, self()),
+	gen_statem:cast(ServerPid, {headers, ReplyTo, StreamRef,
+		Method, Path, normalize_headers(Headers)}),
+	StreamRef.
+
+-spec request(pid(), iodata(), iodata(), req_headers(), iodata()) -> reference().
 request(ServerPid, Method, Path, Headers, Body) ->
 	request(ServerPid, Method, Path, Headers, Body, #{}).
 
-%% @todo Accept header names as maps.
--spec request(pid(), iodata(), iodata(), headers(), iodata(), req_opts()) -> reference().
+-spec request(pid(), iodata(), iodata(), req_headers(), iodata(), req_opts()) -> reference().
 request(ServerPid, Method, Path, Headers, Body, ReqOpts) ->
 	StreamRef = make_ref(),
 	ReplyTo = maps:get(reply_to, ReqOpts, self()),
-	gen_statem:cast(ServerPid, {request, ReplyTo, StreamRef, Method, Path, Headers, Body}),
+	gen_statem:cast(ServerPid, {request, ReplyTo, StreamRef,
+		Method, Path, normalize_headers(Headers), Body}),
 	StreamRef.
+
+normalize_headers([]) ->
+	[];
+normalize_headers([{Name, Value}|Tail]) when is_binary(Name) ->
+	[{string:lowercase(Name), Value}|normalize_headers(Tail)];
+normalize_headers([{Name, Value}|Tail]) when is_list(Name) ->
+	[{string:lowercase(unicode:characters_to_binary(Name)), Value}|normalize_headers(Tail)];
+normalize_headers([{Name, Value}|Tail]) when is_atom(Name) ->
+	[{string:lowercase(atom_to_binary(Name, latin1)), Value}|normalize_headers(Tail)];
+normalize_headers(Headers) when is_map(Headers) ->
+	normalize_headers(maps:to_list(Headers)).
 
 %% Streaming data.
 
 -spec data(pid(), reference(), fin | nofin, iodata()) -> ok.
 data(ServerPid, StreamRef, IsFin, Data) ->
-	gen_statem:cast(ServerPid, {data, self(), StreamRef, IsFin, Data}).
+	case iolist_size(Data) of
+		0 when IsFin =:= nofin ->
+			ok;
+		_ ->
+			gen_statem:cast(ServerPid, {data, self(), StreamRef, IsFin, Data})
+	end.
 
 %% Tunneling.
 
@@ -446,11 +483,11 @@ data(ServerPid, StreamRef, IsFin, Data) ->
 connect(ServerPid, Destination) ->
 	connect(ServerPid, Destination, [], #{}).
 
--spec connect(pid(), connect_destination(), headers()) -> reference().
+-spec connect(pid(), connect_destination(), req_headers()) -> reference().
 connect(ServerPid, Destination, Headers) ->
 	connect(ServerPid, Destination, Headers, #{}).
 
--spec connect(pid(), connect_destination(), headers(), req_opts()) -> reference().
+-spec connect(pid(), connect_destination(), req_headers(), req_opts()) -> reference().
 connect(ServerPid, Destination, Headers, ReqOpts) ->
 	StreamRef = make_ref(),
 	ReplyTo = maps:get(reply_to, ReqOpts, self()),
@@ -627,6 +664,10 @@ flush_ref(StreamRef) ->
 cancel(ServerPid, StreamRef) ->
 	gen_statem:cast(ServerPid, {cancel, self(), StreamRef}).
 
+-spec stream_info(pid(), reference()) -> {ok, map() | undefined} | {error, not_connected}.
+stream_info(ServerPid, StreamRef) ->
+	gen_statem:call(ServerPid, {stream_info, StreamRef}).
+
 %% @todo Allow upgrading an HTTP/1.1 connection to HTTP/2.
 %% http2_upgrade
 
@@ -636,13 +677,13 @@ cancel(ServerPid, StreamRef) ->
 ws_upgrade(ServerPid, Path) ->
 	ws_upgrade(ServerPid, Path, []).
 
--spec ws_upgrade(pid(), iodata(), headers()) -> reference().
+-spec ws_upgrade(pid(), iodata(), req_headers()) -> reference().
 ws_upgrade(ServerPid, Path, Headers) ->
 	StreamRef = make_ref(),
 	gen_statem:cast(ServerPid, {ws_upgrade, self(), StreamRef, Path, Headers}),
 	StreamRef.
 
--spec ws_upgrade(pid(), iodata(), headers(), ws_opts()) -> reference().
+-spec ws_upgrade(pid(), iodata(), req_headers(), ws_opts()) -> reference().
 ws_upgrade(ServerPid, Path, Headers, Opts) ->
 	ok = gun_ws:check_options(Opts),
 	StreamRef = make_ref(),
@@ -760,11 +801,13 @@ not_connected(_, {retries, Retries},
 				{next_event, internal, {connected, Socket, Protocol}}};
 		{error, Reason} when Retries =:= 0 ->
 			{stop, {shutdown, Reason}};
-		{error, Reason} ->
+		{error, _Reason} ->
 			Timeout = maps:get(retry_timeout, Opts, 5000),
-			{keep_state, State#state{last_error=Reason},
+			{keep_state, State,
 				{state_timeout, Timeout, {retries, Retries - 1}}}
 	end;
+not_connected({call, From}, {stream_info, _}, _) ->
+	{keep_state_and_data, {reply, From, {error, not_connected}}};
 not_connected(Type, Event, State) ->
 	handle_common(Type, Event, ?FUNCTION_NAME, State).
 
@@ -805,15 +848,17 @@ connected(info, keepalive, State=#state{protocol=Protocol, protocol_state=ProtoS
 	ProtoState2 = Protocol:keepalive(ProtoState),
 	{keep_state, keepalive_timeout(State#state{protocol_state=ProtoState2})};
 %% Public HTTP interface.
+connected(cast, {headers, ReplyTo, StreamRef, Method, Path, Headers},
+		State=#state{origin_host=Host, origin_port=Port,
+			protocol=Protocol, protocol_state=ProtoState}) ->
+	ProtoState2 = Protocol:headers(ProtoState,
+		StreamRef, ReplyTo, Method, Host, Port, Path, Headers),
+	{keep_state, State#state{protocol_state=ProtoState2}};
 connected(cast, {request, ReplyTo, StreamRef, Method, Path, Headers, Body},
 		State=#state{origin_host=Host, origin_port=Port,
 			protocol=Protocol, protocol_state=ProtoState}) ->
-	ProtoState2 = case Body of
-		<<>> -> Protocol:request(ProtoState,
-			StreamRef, ReplyTo, Method, Host, Port, Path, Headers);
-		_ -> Protocol:request(ProtoState,
-			StreamRef, ReplyTo, Method, Host, Port, Path, Headers, Body)
-	end,
+	ProtoState2 = Protocol:request(ProtoState,
+		StreamRef, ReplyTo, Method, Host, Port, Path, Headers, Body),
 	{keep_state, State#state{protocol_state=ProtoState2}};
 %% @todo Do we want to reject ReplyTo if it's not the process
 %% who initiated the connection? For both data and cancel.
@@ -881,6 +926,9 @@ connected(cast, {ws_send, ReplyTo, _}, _) ->
 		"Connection needs to be upgraded to Websocket "
 		"before the gun:ws_send/1 function can be used."}},
 	keep_state_and_data;
+connected({call, From}, {stream_info, StreamRef},
+		#state{protocol=Protocol, protocol_state=ProtoState}) ->
+	{keep_state_and_data, {reply, From, Protocol:stream_info(ProtoState, StreamRef)}};
 connected(Type, Event, State) ->
 	handle_common(Type, Event, ?FUNCTION_NAME, State).
 
@@ -943,7 +991,8 @@ commands([{origin, _Scheme, Host, Port, Type}|Tail],
 	commands(Tail, State#state{origin_host=Host, origin_port=Port,
 		intermediaries=[Info|Intermediaries]});
 commands([{switch_transport, Transport, Socket}|Tail], State) ->
-	commands(Tail, State#state{socket=Socket, transport=Transport});
+	commands(Tail, active(State#state{socket=Socket, transport=Transport,
+		messages=Transport:messages()}));
 %% @todo The two loops should be reunified and this clause generalized.
 commands([{switch_protocol, Protocol=gun_ws, ProtoState}], State) ->
 	{keep_state, keepalive_cancel(State#state{protocol=Protocol, protocol_state=ProtoState})};
@@ -966,10 +1015,15 @@ disconnect(State=#state{owner=Owner, opts=Opts,
 	{KilledStreams, UnprocessedStreams} = Protocol:down(ProtoState),
 	Owner ! {gun_down, self(), Protocol:name(), Reason, KilledStreams, UnprocessedStreams},
 	Retry = maps:get(retry, Opts, 5),
-	{next_state, not_connected,
-		keepalive_cancel(State#state{socket=undefined,
-			protocol=undefined, protocol_state=undefined, last_error=Reason}),
-		{next_event, internal, {retries, Retry}}}.
+	case Retry of
+		0 ->
+			{stop, {shutdown, Reason}};
+		_ ->
+			{next_state, not_connected,
+				keepalive_cancel(State#state{socket=undefined,
+					protocol=undefined, protocol_state=undefined}),
+				{next_event, internal, {retries, Retry - 1}}}
+	end.
 
 disconnect_flush(State=#state{socket=Socket, messages={OK, Closed, Error}}) ->
 	receive
@@ -985,13 +1039,12 @@ active(State=#state{socket_t = SocketT, proxy_handle = ProxyHandle}) ->
 	State.
 
 keepalive_timeout(State=#state{opts=Opts, protocol=Protocol}) ->
-	%% @todo Might not be worth checking every time?
-	ProtoOptsKey = case Protocol of
-		gun_http -> http_opts;
-		gun_http2 -> http2_opts
+	{ProtoOptsKey, Default} = case Protocol of
+		gun_http -> {http_opts, 25000};
+		gun_http2 -> {http2_opts, 15000}
 	end,
 	ProtoOpts = maps:get(ProtoOptsKey, Opts, #{}),
-	Keepalive = maps:get(keepalive, ProtoOpts, 5000),
+	Keepalive = maps:get(keepalive, ProtoOpts, Default),
 	KeepaliveRef = case Keepalive of
 		infinity -> undefined;
 		%% @todo Maybe change that to a start_timer.
