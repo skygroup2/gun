@@ -1,4 +1,4 @@
-%% Copyright (c) 2015-2018, Loïc Hoguin <essen@ninenines.eu>
+%% Copyright (c) 2015-2019, Loïc Hoguin <essen@ninenines.eu>
 %%
 %% Permission to use, copy, modify, and/or distribute this software for any
 %% purpose with or without fee is hereby granted, provided that the above
@@ -140,7 +140,12 @@ close(Reason, State) ->
 		{error, badframe} ->
 			send({close, 1002, <<>>}, State);
 		{error, badencoding} ->
-			send({close, 1007, <<>>}, State)
+			send({close, 1007, <<>>}, State);
+		%% Socket errors; do nothing.
+		closed ->
+			ok;
+		{error, _} ->
+			ok
 	end.
 
 send(Frame, State=#ws_state{socket=Socket, transport=Transport, extensions=Extensions}) ->

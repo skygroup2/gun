@@ -1,4 +1,4 @@
-%% Copyright (c) 2014-2018, Loïc Hoguin <essen@ninenines.eu>
+%% Copyright (c) 2014-2019, Loïc Hoguin <essen@ninenines.eu>
 %%
 %% Permission to use, copy, modify, and/or distribute this software for any
 %% purpose with or without fee is hereby granted, provided that the above
@@ -20,13 +20,17 @@
 -export([handle/2]).
 -export([close/2]).
 -export([keepalive/1]).
--export([request/8]).
+-export([headers/8]).
 -export([request/9]).
 -export([data/5]).
 -export([connect/5]).
 -export([cancel/3]).
+-export([stream_info/2]).
 -export([down/1]).
 -export([ws_upgrade/7]).
+
+%% Functions shared with gun_http2.
+-export([host_header/3]).
 
 -type io() :: head | {body, non_neg_integer()} | body_close | body_chunked | body_trailer.
 
@@ -139,7 +143,7 @@ handle(Data, State=#http_state{in=body_chunked, in_state=InState,
 				{no_trailers, keepalive} ->
 					handle(Rest, end_stream(State1#http_state{buffer= <<>>}));
 				{no_trailers, close} ->
-					close
+					[{state, end_stream(State1)}, close]
 			end;
 		{done, Data2, HasTrailers, Rest} ->
 			IsFin = case HasTrailers of
@@ -153,7 +157,7 @@ handle(Data, State=#http_state{in=body_chunked, in_state=InState,
 				{no_trailers, keepalive} ->
 					handle(Rest, end_stream(State1#http_state{buffer= <<>>}));
 				{no_trailers, close} ->
-					close
+					[{state, end_stream(State1)}, close]
 			end
 	end;
 handle(Data, State=#http_state{in=body_trailer, buffer=Buffer, connection=Conn,
@@ -169,7 +173,7 @@ handle(Data, State=#http_state{in=body_trailer, buffer=Buffer, connection=Conn,
 				keepalive ->
 					handle(Rest, end_stream(State#http_state{buffer= <<>>}));
 				close ->
-					close
+					[{state, end_stream(State)}, close]
 			end
 	end;
 %% We know the length of the rest of the body.
@@ -186,7 +190,7 @@ handle(Data, State=#http_state{in={body, Length}, connection=Conn}) ->
 			State1 = send_data_if_alive(Data, State, fin),
 			case Conn of
 				keepalive -> {state, end_stream(State1)};
-				close -> close
+				close -> [{state, end_stream(State1)}, close]
 			end;
 		%% Stream finished, rest.
 		true ->
@@ -194,7 +198,7 @@ handle(Data, State=#http_state{in={body, Length}, connection=Conn}) ->
 			State1 = send_data_if_alive(Body, State, fin),
 			case Conn of
 				keepalive -> handle(Rest, end_stream(State1));
-				close -> close
+				close -> [{state, end_stream(State1)}, close]
 			end
 	end.
 
@@ -265,7 +269,7 @@ handle_head(Data, State=#http_state{socket=Socket, version=ClientVersion,
 					case IsFin of
 						fin -> undefined;
 						nofin ->
-							gun_content_handler:init(ReplyTo, StreamRef,
+							gun_content_handler:init(ReplyTo, stream_ref(StreamRef),
 								Status, Headers, Handlers0)
 					end
 			end,
@@ -330,16 +334,11 @@ keepalive(State=#http_state{socket=Socket, transport=Transport, out=head}) ->
 keepalive(State) ->
 	State.
 
-request(State=#http_state{socket=Socket, transport=Transport, version=Version,
+headers(State=#http_state{socket=Socket, transport=Transport, version=Version,
 		out=head}, StreamRef, ReplyTo, Method, Host, Port, Path, Headers) ->
-	Host2 = case Host of
-		{local, _SocketPath} -> <<>>;
-		Tuple when is_tuple(Tuple) -> inet:ntoa(Tuple);
-		_ -> Host
-	end,
 	Headers2 = lists:keydelete(<<"transfer-encoding">>, 1, Headers),
 	Headers3 = case lists:keymember(<<"host">>, 1, Headers) of
-		false -> [{<<"host">>, [Host2, $:, integer_to_binary(Port)]}|Headers2];
+		false -> [{<<"host">>, host_header(Transport, Host, Port)}|Headers2];
 		true -> Headers2
 	end,
 	%% We use Headers2 because this is the smallest list.
@@ -356,15 +355,10 @@ request(State=#http_state{socket=Socket, transport=Transport, version=Version,
 
 request(State=#http_state{socket=Socket, transport=Transport, version=Version,
 		out=head}, StreamRef, ReplyTo, Method, Host, Port, Path, Headers, Body) ->
-	Host2 = case Host of
-		{local, _SocketPath} -> <<>>;
-		Tuple when is_tuple(Tuple) -> inet:ntoa(Tuple);
-		_ -> Host
-	end,
 	Headers2 = lists:keydelete(<<"content-length">>, 1,
 		lists:keydelete(<<"transfer-encoding">>, 1, Headers)),
 	Headers3 = case lists:keymember(<<"host">>, 1, Headers) of
-		false -> [{<<"host">>, [Host2, $:, integer_to_binary(Port)]}|Headers2];
+		false -> [{<<"host">>, host_header(Transport, Host, Port)}|Headers2];
 		true -> Headers2
 	end,
 	Headers4 = transform_header_names(State, Headers3),
@@ -376,6 +370,19 @@ request(State=#http_state{socket=Socket, transport=Transport, version=Version,
 		|Headers4]),
 		Body]),
 	new_stream(State#http_state{connection=Conn}, StreamRef, ReplyTo, Method).
+
+host_header(Transport, Host0, Port) ->
+	Host = case Host0 of
+		{local, _SocketPath} -> <<>>;
+		Tuple when is_tuple(Tuple) -> inet:ntoa(Tuple);
+		Atom when is_atom(Atom) -> atom_to_list(Atom);
+		_ -> Host0
+	end,
+	case {Transport:name(), Port} of
+		{tcp, 80} -> Host;
+		{tls, 443} -> Host;
+		_ -> [Host, $:, integer_to_binary(Port)]
+	end.
 
 transform_header_names(#http_state{transform_header_name = Fun}, Headers) ->
 	lists:keymap(Fun, 1, Headers).
@@ -467,6 +474,21 @@ cancel(State, StreamRef, ReplyTo) ->
 			error_stream_not_found(State, StreamRef, ReplyTo)
 	end.
 
+stream_info(#http_state{streams=Streams}, StreamRef) ->
+	case lists:keyfind(StreamRef, #stream.ref, Streams) of
+		#stream{reply_to=ReplyTo, is_alive=IsAlive} ->
+			{ok, #{
+				ref => StreamRef,
+				reply_to => ReplyTo,
+				state => case IsAlive of
+					true -> running;
+					false -> stopping
+				end
+			}};
+		false ->
+			{ok, undefined}
+	end.
+
 %% HTTP does not provide any way to figure out what streams are unprocessed.
 down(#http_state{streams=Streams}) ->
 	KilledStreams = [case Ref of
@@ -509,10 +531,7 @@ request_io_from_headers(Headers) ->
 		{_, Length} ->
 			{body, cow_http_hd:parse_content_length(Length)};
 		_ ->
-			case lists:keymember(<<"content-type">>, 1, Headers) of
-				true -> body_chunked;
-				false -> head
-			end
+			body_chunked
 	end.
 
 response_io_from_headers(<<"HEAD">>, _, _, _) ->
@@ -520,22 +539,20 @@ response_io_from_headers(<<"HEAD">>, _, _, _) ->
 response_io_from_headers(_, _, Status, _) when (Status =:= 204) or (Status =:= 304) ->
 	head;
 response_io_from_headers(_, Version, _Status, Headers) ->
-	case lists:keyfind(<<"content-length">>, 1, Headers) of
-		{_, <<"0">>} ->
-			head;
-		{_, Length} ->
-			{body, cow_http_hd:parse_content_length(Length)};
-		_ when Version =:= 'HTTP/1.0' ->
-			body_close;
+	case lists:keyfind(<<"transfer-encoding">>, 1, Headers) of
+		{_, TE} when Version =:= 'HTTP/1.1' ->
+			case cow_http_hd:parse_transfer_encoding(TE) of
+				[<<"chunked">>] -> body_chunked;
+				[<<"identity">>] -> body_close
+			end;
 		_ ->
-			case lists:keyfind(<<"transfer-encoding">>, 1, Headers) of
-				false ->
-					body_close;
-				{_, TE} ->
-					case cow_http_hd:parse_transfer_encoding(TE) of
-						[<<"chunked">>] -> body_chunked;
-						[<<"identity">>] -> body_close
-					end
+			case lists:keyfind(<<"content-length">>, 1, Headers) of
+				{_, <<"0">>} ->
+					head;
+				{_, Length} ->
+					{body, cow_http_hd:parse_content_length(Length)};
+				_ ->
+					body_close
 			end
 	end.
 
