@@ -715,14 +715,14 @@ init({Owner, Host, Port, Opts}) ->
       Url1 = gun_url:parse_url(Url),
       #{host := ProxyHost, port := ProxyPort} = gun_url:normalize(Url1),
       {ProxyUser, ProxyPass} =
-        case maps:get(proxy_auth, Opts, nil) of
+        case maps:get(proxy_auth, Opts) of
           {U, P} -> {U, P};
           _ -> {undefined, undefined}
         end,
 			Insecure = maps:get(insecure, Opts, true),
       PO = [{connect_host, Host}, {connect_port, Port}, {connect_transport, Transport},
         {connect_user, ProxyUser}, {connect_pass, ProxyPass}, {insecure, Insecure}, binary, {active, false}],
-      {gun_http_proxy, PO, ProxyHost, ProxyPort};
+      select_http_proxy(Transport, PO, ProxyHost, ProxyPort);
     {ProxyHost, ProxyPort} ->
       {ProxyUser, ProxyPass} =
         case maps:get(proxy_auth, Opts, nil) of
@@ -732,7 +732,7 @@ init({Owner, Host, Port, Opts}) ->
 			Insecure = maps:get(insecure, Opts, true),
       PO = [{connect_host, Host}, {connect_port, Port}, {connect_transport, Transport},
         {connect_user, ProxyUser}, {connect_pass, ProxyPass}, {insecure, Insecure}, binary, {active, false}],
-      {gun_http_proxy, PO, ProxyHost, ProxyPort};
+      select_http_proxy(Transport, PO, ProxyHost, ProxyPort);
     {connect, ProxyHost, ProxyPort} ->
       {ProxyUser, ProxyPass} =
         case maps:get(proxy_auth, Opts, nil) of
@@ -742,7 +742,7 @@ init({Owner, Host, Port, Opts}) ->
 			Insecure = maps:get(insecure, Opts, true),
       PO = [{connect_host, Host}, {connect_port, Port}, {connect_transport, Transport},
         {connect_user, ProxyUser}, {connect_pass, ProxyPass}, {insecure, Insecure}, binary, {active, false}],
-      {gun_http_proxy, PO, ProxyHost, ProxyPort};
+      select_http_proxy(Transport, PO, ProxyHost, ProxyPort);
     {socks5, ProxyHost, ProxyPort} ->
       {ProxyUser, ProxyPass} =
         case maps:get(proxy_auth, Opts, nil) of
@@ -763,7 +763,6 @@ init({Owner, Host, Port, Opts}) ->
 	 	_ ->
       {Transport, [binary, {active, false}], Host, Port}
  	end,
-
 	OwnerRef = monitor(process, Owner),
 	State = #state{owner=Owner, owner_ref=OwnerRef,
 		host = Host1, port = Port1, origin_host=Host, origin_port=Port,
@@ -773,6 +772,51 @@ init({Owner, Host, Port, Opts}) ->
 
 default_transport(443) -> tls;
 default_transport(_) -> tcp.
+
+select_http_proxy(gun_tcp, _PO, ProxyHost, ProxyPort) -> {gun_tcp, [binary, {active, false}], ProxyHost, ProxyPort};
+select_http_proxy(_, PO, ProxyHost, ProxyPort) -> {gun_http_proxy, PO, ProxyHost, ProxyPort}.
+
+format_path_headers(gun_tcp, OriginHost, OriginPort, Path, Headers, Opts) ->
+	IsProxy = is_http_proxy(Opts),
+	case maps:get(proxy_auth, Opts, undefined) of
+		{U, P} when IsProxy == true ->
+			{add_host_to_path(OriginHost, OriginPort, Path), add_proxy_authorization(U, P, Headers)};
+		_ ->
+			{Path, Headers}
+	end;
+
+format_path_headers(_, _OriginHost, _OriginPort, Path, Headers, _Opts) ->
+	{Path, Headers}.
+
+add_host_to_path(OriginHost, OriginPort, Path) ->
+	case OriginPort of
+		80 ->
+			iolist_to_binary([<<"http://">>, OriginHost, Path]);
+		_ ->
+			iolist_to_binary([<<"http://">>, OriginHost, integer_to_binary(OriginPort), Path])
+	end.
+
+add_proxy_authorization(ProxyUser, ProxyPass, Headers) ->
+	HasProxyAuthorization = lists:keymember(<<"proxy-authorization">>, 1, Headers),
+	case HasProxyAuthorization of
+		false ->
+			Credentials = base64:encode(<<ProxyUser/binary, ":", ProxyPass/binary>>),
+			[{<<"proxy-authorization">>, [<<"Basic ">>, Credentials]} | Headers];
+		true ->
+			Headers
+	end.
+
+is_http_proxy(Opts) ->
+	case maps:get(proxy, Opts, undefined) of
+		Url when is_binary(Url) orelse is_list(Url) ->
+			true;
+		{_ProxyHost, _ProxyPort} ->
+			true;
+		{connect, _ProxyHost, _ProxyPort} ->
+			true;
+		_ ->
+			false
+	end.
 
 not_connected(_, {retries, Retries},
 		State=#state{host=Host, port=Port, opts=Opts, transport=Transport, proxy_opt = ProxyOpt, proxy_handle = ProxyHandle}) ->
@@ -856,9 +900,11 @@ connected(cast, {headers, ReplyTo, StreamRef, Method, Path, Headers},
 	{keep_state, State#state{protocol_state=ProtoState2}};
 connected(cast, {request, ReplyTo, StreamRef, Method, Path, Headers, Body},
 		State=#state{origin_host=Host, origin_port=Port,
-			protocol=Protocol, protocol_state=ProtoState}) ->
+			protocol=Protocol, protocol_state=ProtoState,
+			proxy_handle=ProxyHandle, opts=Opts}) ->
+	{Path1, Headers1} = format_path_headers(ProxyHandle, Host, Port, Path, Headers, Opts),
 	ProtoState2 = Protocol:request(ProtoState,
-		StreamRef, ReplyTo, Method, Host, Port, Path, Headers, Body),
+		StreamRef, ReplyTo, Method, Host, Port, Path1, Headers1, Body),
 	{keep_state, State#state{protocol_state=ProtoState2}};
 %% @todo Do we want to reject ReplyTo if it's not the process
 %% who initiated the connection? For both data and cancel.
