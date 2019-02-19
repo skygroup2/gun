@@ -818,11 +818,25 @@ is_http_proxy(Opts) ->
 			false
 	end.
 
+ensure_gun_tcp_opt(TransOpts0) ->
+	SslOpts = [verify, verify_fun, fail_if_no_peer_cert, depth, cert, certfile, key, keyfile, password, cacerts,
+		cacertfile, dh, dhfile, ciphers, user_lookup_fun, reuse_sessions, reuse_session, next_protocols_advertised,
+		client_preferred_next_protocols, alpn_advertised_protocols, log_alert, server_name_indication, customize_hostname_check,
+		sni_hosts, sni_fun, protocol, handshake, secure_renegotiate, crl_check, crl_cache, partial_chain, versions],
+	lists:filter(fun(X) ->
+			case X of
+				{K, _} ->
+					lists:member(K, SslOpts) == false;
+				K ->
+					lists:member(K, SslOpts) == false
+			end
+		end, TransOpts0).
+
 not_connected(_, {retries, Retries},
 		State=#state{host=Host, port=Port, opts=Opts, transport=Transport, proxy_opt = ProxyOpt, proxy_handle = ProxyHandle}) ->
 	TransOpts0 = maps:get(transport_opts, Opts, []),
 	TransOpts1 = case Transport of
-		gun_tcp -> TransOpts0;
+		gun_tcp -> ensure_gun_tcp_opt(TransOpts0);
 		gun_tls -> ensure_alpn(maps:get(protocols, Opts, [http2, http]), TransOpts0)
 	end,
 
