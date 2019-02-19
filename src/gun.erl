@@ -993,8 +993,11 @@ connected(Type, Event, State) ->
 	handle_common(Type, Event, ?FUNCTION_NAME, State).
 
 %% Common events.
-handle_common(cast, {shutdown, Owner}, _, #state{owner=Owner}) ->
-	%% @todo Graceful shutdown.
+handle_common(cast, {shutdown, Owner}, _, #state{owner=Owner, socket_t=SocketT, proxy_handle = ProxyHandle}) ->
+	case SocketT of
+		undefined -> ok;
+		_ -> ProxyHandle:close(SocketT)
+	end,
 	stop;
 %% We stop when the owner is gone.
 handle_common(info, {'DOWN', OwnerRef, process, Owner, Reason}, _, #state{
