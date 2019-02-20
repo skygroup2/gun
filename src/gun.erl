@@ -230,7 +230,7 @@ check_options([]) ->
 	ok;
 check_options([{proxy, Proxy}|Opts]) when is_list(Proxy) orelse is_binary(Proxy) orelse is_tuple(Proxy) ->
 	check_options(Opts);
-check_options([{proxy_auth, ProxyAuth}|Opts]) when is_tuple(ProxyAuth) ->
+check_options([{proxy_auth, ProxyAuth}|Opts]) when is_tuple(ProxyAuth) orelse ProxyAuth == nil ->
 	check_options(Opts);
 check_options([{remote_proxy, Proxy}|Opts]) when is_list(Proxy) orelse is_map(Proxy) ->
 	check_options(Opts);
