@@ -1000,22 +1000,17 @@ handle_common(cast, {shutdown, Owner}, _, #state{owner=Owner, socket_t=SocketT, 
 	end,
 	stop;
 %% We stop when the owner is gone.
-handle_common(info, {'DOWN', OwnerRef, process, Owner, Reason}, _, #state{
-	owner=Owner, owner_ref=OwnerRef, socket_t = SocketT, proxy_handle = ProxyHandle,
-	protocol=Protocol, protocol_state=ProtoState}) ->
-	_ = case Protocol of
-		undefined -> ok;
-		_ -> Protocol:close(owner_gone, ProtoState)
-	end,
-	_ = case SocketT of
-		undefined -> ok;
-		_ -> ProxyHandle:close(SocketT)
-	end,
+handle_common(info, {'DOWN', OwnerRef, process, Owner, Reason}, _, #state{owner=Owner, owner_ref=OwnerRef} = StateData) ->
+	close_all(StateData),
 	owner_gone(Reason);
 handle_common({call, From}, _, _, _) ->
 	{keep_state_and_data, {reply, From, {error, bad_call}}};
 %% @todo The ReplyTo patch disabled the notowner behavior.
 %% We need to add an option to enforce this behavior if needed.
+handle_common(info, {timeout, _TRef,{cow_http2_machine,settings_timeout}}, connected, StateData) ->
+	close_all(StateData),
+	owner_gone({shutdown, timeout});
+
 handle_common(cast, Any, _, #state{owner=Owner}) when element(2, Any) =/= Owner ->
 	element(2, Any) ! {gun_error, self(), {notowner,
 		"Operations are restricted to the owner of the connection."}},
@@ -1024,6 +1019,16 @@ handle_common(Type, Event, StateName, StateData) ->
 	error_logger:error_msg("Unexpected event in state ~p of type ~p:~n~w~n~p~n",
 		[StateName, Type, Event, StateData]),
 	keep_state_and_data.
+
+close_all(#state{socket_t = SocketT, proxy_handle = ProxyHandle, protocol=Protocol, protocol_state=ProtoState}) ->
+	_ = case Protocol of
+		undefined -> ok;
+		_ -> Protocol:close(owner_gone, ProtoState)
+	end,
+	_ = case SocketT of
+		undefined -> ok;
+		_ -> ProxyHandle:close(SocketT)
+	end.
 
 commands(Command, State) when not is_list(Command) ->
 	commands([Command], State);
