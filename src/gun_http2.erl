@@ -233,8 +233,7 @@ close(_, #http2_state{streams=Streams}) ->
 close_streams([]) ->
 	ok;
 close_streams([#stream{ref=StreamRef, reply_to=ReplyTo}|Tail]) ->
-	ReplyTo ! {gun_error, self(), StreamRef, {closed,
-		"The connection was lost."}},
+	ReplyTo ! {gun_error, self(), StreamRef, closed},
 	close_streams(Tail).
 
 keepalive(State=#http2_state{socket=Socket, transport=Transport}) ->
