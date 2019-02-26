@@ -320,8 +320,7 @@ close_streams([]) ->
 close_streams([#stream{is_alive=false}|Tail]) ->
 	close_streams(Tail);
 close_streams([#stream{ref=StreamRef, reply_to=ReplyTo}|Tail]) ->
-	ReplyTo ! {gun_error, self(), StreamRef, {closed,
-		"The connection was lost."}},
+	ReplyTo ! {gun_error, self(), StreamRef, closed},
 	close_streams(Tail).
 
 %% We don't send a keep-alive when a CONNECT request was initiated.

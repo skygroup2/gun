@@ -1007,7 +1007,7 @@ handle_common({call, From}, _, _, _) ->
 	{keep_state_and_data, {reply, From, {error, bad_call}}};
 %% @todo The ReplyTo patch disabled the notowner behavior.
 %% We need to add an option to enforce this behavior if needed.
-handle_common(info, {timeout, _TRef,{cow_http2_machine,settings_timeout}}, connected, StateData) ->
+handle_common(info, {timeout, _TRef,{cow_http2_machine, _}}, connected, StateData) ->
 	close_all(StateData),
 	owner_gone({shutdown, timeout});
 
