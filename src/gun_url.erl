@@ -39,7 +39,7 @@ parse_url(URL) when is_list(URL) ->
 parse_url(<<"http://", Rest/binary>>) ->
   parse_url(Rest, #{transport => gun_tcp, scheme => http});
 parse_url(<<"https://", Rest/binary>>) ->
-  parse_url(Rest, #{transport => gun_ssl, scheme=> https});
+  parse_url(Rest, #{transport => gun_tls, scheme=> https});
 parse_url(<<"http+unix://", Rest/binary>>) ->
   parse_url(Rest, #{transport => gun_local_tcp, scheme => http_unix});
 parse_url(URL) ->
@@ -103,7 +103,7 @@ normalize(#{scheme := Scheme, host := Host0, port := Port,
 
 transport_scheme(gun_tcp) ->
   http;
-transport_scheme(gun_ssl) ->
+transport_scheme(gun_tls) ->
   https;
 transport_scheme(gun_local_tcp) ->
   http_unix.
@@ -178,7 +178,7 @@ parse_netloc(<<"[", Rest/binary>>, #{transport := Transport} = S) ->
   case binary:split(Rest, <<"]">>, [trim]) of
     [Host] when Transport =:= gun_tcp ->
       S#{host => binary_to_list(Host), port => 80};
-    [Host] when Transport =:= gun_ssl ->
+    [Host] when Transport =:= gun_tls ->
       S#{host => binary_to_list(Host), port => 443};
     [Host, <<":", Port/binary>>] when Port /= <<>> ->
       S#{host => binary_to_list(Host),
@@ -191,7 +191,7 @@ parse_netloc(Netloc, #{transport := Transport} = S) ->
   case binary:split(Netloc, <<":">>, [trim]) of
     [Host] when Transport =:= gun_tcp ->
       S#{host => unicode:characters_to_list((Host)), port => 80};
-    [Host] when Transport =:= gun_ssl ->
+    [Host] when Transport =:= gun_tls ->
       S#{host => unicode:characters_to_list(Host), port => 443};
     [Host] when Transport =:= gun_local_tcp ->
       S#{host => unicode:characters_to_list(urldecode(Host)), port => 0};
