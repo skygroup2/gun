@@ -14,14 +14,14 @@ protocols is required in order to read this guide.
 
 Gun is tested and supported on Linux, FreeBSD, Windows and OSX.
 
-Gun is developed for Erlang/OTP 19.0 and newer.
+Gun is developed for Erlang/OTP 20.0 and newer.
 
 === License
 
 Gun uses the ISC License.
 
 ----
-Copyright (c) 2013-2018, Loïc Hoguin <essen@ninenines.eu>
+Copyright (c) 2013-2019, Loïc Hoguin <essen@ninenines.eu>
 
 Permission to use, copy, modify, and/or distribute this software for any
 purpose with or without fee is hereby granted, provided that the above
@@ -46,7 +46,4 @@ In the HTTP protocol, the method name is case sensitive. All standard
 method names are uppercase.
 
 Header names are case insensitive. Gun converts all the header names
-to lowercase, and expects your application to provide lowercase header
-names.
-
-The same applies to any other case insensitive value.
+to lowercase, including request headers provided by your application.

@@ -29,6 +29,7 @@ Requests:
 * link:man:gun:post(3)[gun:post(3)] - Process the enclosed representation according to a resource's own semantics
 * link:man:gun:put(3)[gun:put(3)] - Create or replace a resource
 * link:man:gun:delete(3)[gun:delete(3)] - Delete a resource
+* link:man:gun:headers(3)[gun:headers(3)] - Initiate the given request
 * link:man:gun:request(3)[gun:request(3)] - Perform the given request
 * link:man:gun:data(3)[gun:data(3)] - Stream the body of a request
 
@@ -46,6 +47,7 @@ Messages:
 Streams:
 
 * link:man:gun:cancel(3)[gun:cancel(3)] - Cancel the given stream
+* link:man:gun:stream_info(3)[gun:stream_info(3)] - Obtain information about a stream
 
 Websocket:
 
@@ -153,13 +155,14 @@ The default value is given next to the option name:
 
 // @todo Document content_handlers and gun_sse_h.
 
-keepalive (5000)::
+keepalive (infinity)::
 
 Time between pings in milliseconds. Since the HTTP protocol has
 no standardized way to ping the server, Gun will simply send an
 empty line when the connection is idle. Gun only makes a best
 effort here as servers usually have configurable limits to drop
-idle connections. Use `infinity` to disable.
+idle connections. Disabled by default due to potential
+incompatibilities.
 
 transform_header_name - see below::
 
@@ -265,6 +268,16 @@ ws_opts (#{})::
 
 Options specific to the Websocket protocol.
 
+=== req_headers()
+
+[source,erlang]
+----
+req_headers() :: [{binary() | string() | atom(),   iodata()}]
+               | #{binary() | string() | atom() => iodata()}
+----
+
+Request headers.
+
 === req_opts()
 
 [source,erlang]
@@ -313,6 +326,13 @@ undocumented and must be set to `gun_ws_h`.
 
 == Changelog
 
+* *2.0*: Introduce the type `req_headers()` and extend the
+         types accepted for header names for greater
+         interoperability. Header names are automatically
+         lowercased as well.
+* *2.0*: Function `gun:headers/4,5` introduced.
+* *2.0*: The `keepalive` option is now set to `infinity` by
+         default for the HTTP/1.1 protocol, disabling it.
 * *1.3*: Add the CONNECT destination's `protocols` option and
          deprecate the previously introduced `protocol` option.
 * *1.2*: Introduce the type `connect_destination()`.
