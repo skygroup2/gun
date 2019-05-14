@@ -24,7 +24,7 @@ ConnPid    :: pid()
 MonitorRef :: reference()
 Timeout    :: timeout()
 Protocol   :: http | http2
-Reason     :: timeout | any()
+Reason     :: {down, any()} | timeout
 ----
 
 Wait for the connection to be up.
@@ -54,6 +54,7 @@ may also be returned when a timeout or an error occur.
 
 == Changelog
 
+* *2.0*: The error tuple type now includes the type of error.
 * *1.0*: Function introduced.
 
 == Examples

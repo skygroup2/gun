@@ -496,14 +496,24 @@ connect(ServerPid, Destination, Headers, ReqOpts) ->
 
 %% Awaiting gun messages.
 
-%% @todo spec await await_body
+-type resp_headers() :: [{binary(), binary()}].
+-type await_result() :: {inform, 100..199, resp_headers()}
+	| {response, fin | nofin, non_neg_integer(), resp_headers()}
+	| {data, fin | nofin, binary()}
+	| {trailers, resp_headers()}
+	| {push, reference(), binary(), binary(), resp_headers()}
+	| {upgrade, [binary()], resp_headers()}
+	| {ws, ws_frame()} %% @todo Excluding ping/pong, for now.
+	| {error, {stream_error | connection_error | down, any()} | timeout}.
 
+-spec await(pid(), reference()) -> await_result().
 await(ServerPid, StreamRef) ->
 	MRef = monitor(process, ServerPid),
 	Res = await(ServerPid, StreamRef, 5000, MRef),
 	demonitor(MRef, [flush]),
 	Res.
 
+-spec await(pid(), reference(), timeout() | reference()) -> await_result().
 await(ServerPid, StreamRef, MRef) when is_reference(MRef) ->
 	await(ServerPid, StreamRef, 5000, MRef);
 await(ServerPid, StreamRef, Timeout) ->
@@ -512,7 +522,7 @@ await(ServerPid, StreamRef, Timeout) ->
 	demonitor(MRef, [flush]),
 	Res.
 
-%% @todo Add gun_upgrade and gun_ws?
+-spec await(pid(), reference(), timeout(), reference()) -> await_result().
 await(ServerPid, StreamRef, Timeout, MRef) ->
 	receive
 		{gun_inform, ServerPid, StreamRef, Status, Headers} ->
@@ -525,22 +535,32 @@ await(ServerPid, StreamRef, Timeout, MRef) ->
 			{trailers, Trailers};
 		{gun_push, ServerPid, StreamRef, NewStreamRef, Method, URI, Headers} ->
 			{push, NewStreamRef, Method, URI, Headers};
+		{gun_upgrade, ServerPid, StreamRef, Protocols, Headers} ->
+			{upgrade, Protocols, Headers};
+		{gun_ws, ServerPid, StreamRef, Frame} ->
+			{ws, Frame};
 		{gun_error, ServerPid, StreamRef, Reason} ->
-			{error, Reason};
+			{error, {stream_error, Reason}};
 		{gun_error, ServerPid, Reason} ->
-			{error, Reason};
+			{error, {connection_error, Reason}};
 		{'DOWN', MRef, process, ServerPid, Reason} ->
-			{error, Reason}
+			{error, {down, Reason}}
 	after Timeout ->
 		{error, timeout}
 	end.
 
+-type await_body_result() :: {ok, binary()}
+	| {ok, binary(), resp_headers()}
+	| {error, {stream_error | connection_error | down, any()} | timeout}.
+
+-spec await_body(pid(), reference()) -> await_body_result().
 await_body(ServerPid, StreamRef) ->
 	MRef = monitor(process, ServerPid),
 	Res = await_body(ServerPid, StreamRef, 5000, MRef, <<>>),
 	demonitor(MRef, [flush]),
 	Res.
 
+-spec await_body(pid(), reference(), timeout() | reference()) -> await_body_result().
 await_body(ServerPid, StreamRef, MRef) when is_reference(MRef) ->
 	await_body(ServerPid, StreamRef, 5000, MRef, <<>>);
 await_body(ServerPid, StreamRef, Timeout) ->
@@ -549,6 +569,7 @@ await_body(ServerPid, StreamRef, Timeout) ->
 	demonitor(MRef, [flush]),
 	Res.
 
+-spec await_body(pid(), reference(), timeout(), reference()) -> await_body_result().
 await_body(ServerPid, StreamRef, Timeout, MRef) ->
 	await_body(ServerPid, StreamRef, Timeout, MRef, <<>>).
 
@@ -564,23 +585,23 @@ await_body(ServerPid, StreamRef, Timeout, MRef, Acc) ->
 		{gun_trailers, ServerPid, StreamRef, Trailers} ->
 			{ok, Acc, Trailers};
 		{gun_error, ServerPid, StreamRef, Reason} ->
-			{error, Reason};
+			{error, {stream_error, Reason}};
 		{gun_error, ServerPid, Reason} ->
-			{error, Reason};
+			{error, {connection_error, Reason}};
 		{'DOWN', MRef, process, ServerPid, Reason} ->
-			{error, Reason}
+			{error, {down, Reason}}
 	after Timeout ->
 		{error, timeout}
 	end.
 
--spec await_up(pid()) -> {ok, http | http2} | {error, atom()}.
+-spec await_up(pid()) -> {ok, http | http2} | {error, {down, any()} | timeout}.
 await_up(ServerPid) ->
 	MRef = monitor(process, ServerPid),
 	Res = await_up(ServerPid, 5000, MRef),
 	demonitor(MRef, [flush]),
 	Res.
 
--spec await_up(pid(), reference() | timeout()) -> {ok, http | http2} | {error, atom()}.
+-spec await_up(pid(), reference() | timeout()) -> {ok, http | http2} | {error, {down, any()} | timeout}.
 await_up(ServerPid, MRef) when is_reference(MRef) ->
 	await_up(ServerPid, 5000, MRef);
 await_up(ServerPid, Timeout) ->
@@ -589,13 +610,13 @@ await_up(ServerPid, Timeout) ->
 	demonitor(MRef, [flush]),
 	Res.
 
--spec await_up(pid(), timeout(), reference()) -> {ok, http | http2} | {error, atom()}.
+-spec await_up(pid(), timeout(), reference()) -> {ok, http | http2} | {error, {down, any()} | timeout}.
 await_up(ServerPid, Timeout, MRef) ->
 	receive
 		{gun_up, ServerPid, Protocol} ->
 			{ok, Protocol};
 		{'DOWN', MRef, process, ServerPid, Reason} ->
-			{error, Reason}
+			{error, {down, Reason}}
 	after Timeout ->
 		{error, timeout}
 	end.

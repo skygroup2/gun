@@ -74,7 +74,7 @@ connect_timeout_infinity(_) ->
 		error(timeout)
 	end.
 
-detect_owner_gone(_) ->
+detect_owner_down(_) ->
 	{ok, ListenSocket} = gen_tcp:listen(0, [binary, {active, false}]),
 	{ok, {_, Port}} = inet:sockname(ListenSocket),
 	Self = self(),
@@ -100,7 +100,34 @@ detect_owner_gone(_) ->
 		error(timeout)
 	end.
 
-detect_owner_gone_ws(_) ->
+detect_owner_down_unexpected(_) ->
+	{ok, ListenSocket} = gen_tcp:listen(0, [binary, {active, false}]),
+	{ok, {_, Port}} = inet:sockname(ListenSocket),
+	Self = self(),
+	spawn(fun() ->
+		{ok, ConnPid} = gun:open("localhost", Port),
+		Self ! {conn, ConnPid},
+		gun:await_up(ConnPid),
+		timer:sleep(100),
+		exit(unexpected)
+	end),
+	{ok, _} = gen_tcp:accept(ListenSocket, 5000),
+	Pid = receive
+		{conn, C} ->
+			C
+	after 1000 ->
+		error(timeout)
+	end,
+	Ref = monitor(process, Pid),
+	receive
+		{'DOWN', Ref, process, Pid, {shutdown, {owner_down, unexpected}}} ->
+			ok
+	after 1000 ->
+		true = erlang:is_process_alive(Pid),
+		error(timeout)
+	end.
+
+detect_owner_down_ws(_) ->
 	Name = name(),
 	{ok, _} = cowboy:start_clear(Name, [], #{env => #{
 		dispatch => cowboy_router:compile([{'_', [{"/", ws_echo, []}]}])
@@ -315,10 +342,17 @@ retry_0(_) ->
 	doc("Ensure Gun gives up immediately with retry=0."),
 	{ok, Pid} = gun:open("localhost", 12345, #{retry => 0, retry_timeout => 500}),
 	Ref = monitor(process, Pid),
+	%% On Windows when the connection is refused the OS will retry
+	%% 3 times before giving up, with a 500ms delay between tries.
+	%% This adds approximately 1 second to connection failures.
+	After = case os:type() of
+		{win32, _} -> 1200;
+		_ -> 200
+	end,
 	receive
 		{'DOWN', Ref, process, Pid, {shutdown, _}} ->
 			ok
-	after 200 ->
+	after After ->
 		error(timeout)
 	end.
 
@@ -326,10 +360,14 @@ retry_1(_) ->
 	doc("Ensure Gun gives up with retry=1."),
 	{ok, Pid} = gun:open("localhost", 12345, #{retry => 1, retry_timeout => 500}),
 	Ref = monitor(process, Pid),
+	After = case os:type() of
+		{win32, _} -> 2700;
+		_ -> 700
+	end,
 	receive
 		{'DOWN', Ref, process, Pid, {shutdown, _}} ->
 			ok
-	after 700 ->
+	after After ->
 		error(timeout)
 	end.
 
@@ -342,10 +380,14 @@ retry_immediately(_) ->
 		end),
 	{ok, Pid} = gun:open("localhost", OriginPort, #{retry => 1, retry_timeout => 500}),
 	Ref = monitor(process, Pid),
+	After = case os:type() of
+		{win32, _} -> 1200;
+		_ -> 200
+	end,
 	receive
 		{'DOWN', Ref, process, Pid, {shutdown, _}} ->
 			ok
-	after 200 ->
+	after After ->
 		error(timeout)
 	end.
 
@@ -353,17 +395,36 @@ retry_timeout(_) ->
 	doc("Ensure the retry_timeout value is enforced."),
 	{ok, Pid} = gun:open("localhost", 12345, #{retry => 1, retry_timeout => 1000}),
 	Ref = monitor(process, Pid),
+	After = case os:type() of
+		{win32, _} -> 2800;
+		_ -> 800
+	end,
 	receive
 		{'DOWN', Ref, process, Pid, {shutdown, _}} ->
 			error(shutdown_too_early)
-	after 800 ->
+	after After ->
 		ok
 	end,
 	receive
 		{'DOWN', Ref, process, Pid, {shutdown, _}} ->
 			ok
-	after 800 ->
+	after After ->
 		error(shutdown_too_late)
+	end.
+
+shutdown_reason(_) ->
+	doc("The last connection failure must be propagated."),
+	{ok, Pid} = gun:open("localhost", 12345, #{retry => 0}),
+	Ref = monitor(process, Pid),
+	After = case os:type() of
+		{win32, _} -> 1200;
+		_ -> 200
+	end,
+	receive
+		{'DOWN', Ref, process, Pid, {shutdown, econnrefused}} ->
+			ok
+	after After ->
+		error(timeout)
 	end.
 
 stream_info_http(_) ->
@@ -427,16 +488,13 @@ stream_info_http2(_) ->
 	{error, not_connected} = gun:stream_info(Pid, StreamRef),
 	gun:close(Pid).
 
-shutdown_reason(_) ->
-	doc("The last connection failure must be propagated."),
-	{ok, Pid} = gun:open("localhost", 12345, #{retry => 0}),
-	Ref = monitor(process, Pid),
-	receive
-		{'DOWN', Ref, process, Pid, {shutdown, econnrefused}} ->
-			ok
-	after 200 ->
-		error(timeout)
-	end.
+supervise_false(_) ->
+	doc("The supervise option allows starting without a supervisor."),
+	{ok, _, OriginPort} = init_origin(tcp, http),
+	{ok, Pid} = gun:open("localhost", OriginPort, #{supervise => false}),
+	{ok, http} = gun:await_up(Pid),
+	[] = [P || {_, P, _, _} <- supervisor:which_children(gun_sup), P =:= Pid],
+	ok.
 
 transform_header_name(_) ->
 	doc("The transform_header_name option allows changing the case of header names."),
