@@ -1,7 +1,7 @@
 .erlang.mk
 .*.plt
 *.d
-deps
+/deps
 doc/guide.pdf
 doc/html
 doc/man*
