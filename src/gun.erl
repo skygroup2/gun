@@ -1106,7 +1106,7 @@ disconnect(State=#state{owner=Owner, opts=Opts,
   Owner ! {gun_down, self(), Protocol:name(), Reason, Retry, KilledStreams, UnprocessedStreams},
 	case Retry of
 		0 ->
-			{stop, {shutdown, Reason}};
+			stop;
 		_ ->
 			{next_state, not_connected,
 				keepalive_cancel(State#state{socket=undefined,
