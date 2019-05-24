@@ -135,6 +135,8 @@ close(Reason, State) ->
 	case Reason of
 		normal ->
 			send({close, 1000, <<>>}, State);
+		close ->
+			send({close, 1000, <<>>}, State);
 		owner_gone ->
 			send({close, 1001, <<>>}, State);
 		{error, badframe} ->
