@@ -1108,10 +1108,11 @@ disconnect(State=#state{owner=Owner, opts=Opts,
 		0 ->
 			stop;
 		_ ->
+      % set timeout for waiting shutdown
 			{next_state, not_connected,
 				keepalive_cancel(State#state{socket=undefined,
 					protocol=undefined, protocol_state=undefined}),
-				{next_event, internal, {retries, Retry - 1}}}
+				{state_timeout, 500, {retries, Retry - 1}}}
 	end.
 
 disconnect_flush(State=#state{socket=Socket, messages={OK, Closed, Error}}) ->
