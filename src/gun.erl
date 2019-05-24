@@ -631,7 +631,7 @@ flush_pid(ServerPid) ->
 	receive
 		{gun_up, ServerPid, _} ->
 			flush_pid(ServerPid);
-		{gun_down, ServerPid, _, _, _, _} ->
+    {gun_down, ServerPid, _, _, _, _, _} ->
 			flush_pid(ServerPid);
 		{gun_inform, ServerPid, _, _, _} ->
 			flush_pid(ServerPid);
@@ -1102,8 +1102,8 @@ disconnect(State=#state{owner=Owner, opts=Opts,
 	disconnect_flush(State),
 	%% @todo Stop keepalive timeout, flush message.
 	{KilledStreams, UnprocessedStreams} = Protocol:down(ProtoState),
-	Owner ! {gun_down, self(), Protocol:name(), Reason, KilledStreams, UnprocessedStreams},
 	Retry = maps:get(retry, Opts, 5),
+  Owner ! {gun_down, self(), Protocol:name(), Reason, Retry, KilledStreams, UnprocessedStreams},
 	case Retry of
 		0 ->
 			{stop, {shutdown, Reason}};
