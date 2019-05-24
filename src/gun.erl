@@ -1056,7 +1056,7 @@ commands(Command, State) when not is_list(Command) ->
 commands([], State) ->
 	{keep_state, State};
 commands([close|_], State) ->
-	disconnect(State, normal);
+	disconnect(State, close);
 commands([Error={error, _}|_], State) ->
 	disconnect(State, Error);
 commands([{state, ProtoState}|Tail], State) ->
@@ -1102,8 +1102,12 @@ disconnect(State=#state{owner=Owner, opts=Opts,
 	disconnect_flush(State),
 	%% @todo Stop keepalive timeout, flush message.
 	{KilledStreams, UnprocessedStreams} = Protocol:down(ProtoState),
-	Retry = maps:get(retry, Opts, 5),
-  Owner ! {gun_down, self(), Protocol:name(), Reason, Retry, KilledStreams, UnprocessedStreams},
+	%% @todo need to review reason close for finish request with connection: close
+	Retry = if
+		Reason == close -> 0;
+		true -> maps:get(retry, Opts, 5)
+	end,
+	Owner ! {gun_down, self(), Protocol:name(), Reason, Retry, KilledStreams, UnprocessedStreams},
 	case Retry of
 		0 ->
 			stop;
