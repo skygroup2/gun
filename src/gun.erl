@@ -725,7 +725,7 @@ start_link(Owner, Host, Port, Opts) ->
 	gen_statem:start_link(?MODULE, {Owner, Host, Port, Opts}, []).
 
 init({Owner, Host, Port, Opts}) ->
-	Retry = maps:get(retry, Opts, 5),
+	Retry = maps:get(retry, Opts, 0),
 	Transport = case maps:get(transport, Opts, default_transport(Port)) of
 		tcp -> gun_tcp;
 		tls -> gun_tls
