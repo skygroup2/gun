@@ -335,7 +335,7 @@ close(ServerPid) ->
 
 -spec shutdown(pid()) -> ok.
 shutdown(ServerPid) ->
-	gen_statem:cast(ServerPid, {shutdown, self()}).
+	gen_statem2:cast(ServerPid, {shutdown, self()}).
 
 %% Requests.
 
@@ -439,7 +439,7 @@ headers(ServerPid, Method, Path, Headers) ->
 headers(ServerPid, Method, Path, Headers, ReqOpts) ->
 	StreamRef = make_ref(),
 	ReplyTo = maps:get(reply_to, ReqOpts, self()),
-	gen_statem:cast(ServerPid, {headers, ReplyTo, StreamRef,
+	gen_statem2:cast(ServerPid, {headers, ReplyTo, StreamRef,
 		Method, Path, normalize_headers(Headers)}),
 	StreamRef.
 
@@ -451,7 +451,7 @@ request(ServerPid, Method, Path, Headers, Body) ->
 request(ServerPid, Method, Path, Headers, Body, ReqOpts) ->
 	StreamRef = make_ref(),
 	ReplyTo = maps:get(reply_to, ReqOpts, self()),
-	gen_statem:cast(ServerPid, {request, ReplyTo, StreamRef,
+	gen_statem2:cast(ServerPid, {request, ReplyTo, StreamRef,
 		Method, Path, normalize_headers(Headers), Body}),
 	StreamRef.
 
@@ -474,7 +474,7 @@ data(ServerPid, StreamRef, IsFin, Data) ->
 		0 when IsFin =:= nofin ->
 			ok;
 		_ ->
-			gen_statem:cast(ServerPid, {data, self(), StreamRef, IsFin, Data})
+			gen_statem2:cast(ServerPid, {data, self(), StreamRef, IsFin, Data})
 	end.
 
 %% Tunneling.
@@ -491,7 +491,7 @@ connect(ServerPid, Destination, Headers) ->
 connect(ServerPid, Destination, Headers, ReqOpts) ->
 	StreamRef = make_ref(),
 	ReplyTo = maps:get(reply_to, ReqOpts, self()),
-	gen_statem:cast(ServerPid, {connect, ReplyTo, StreamRef, Destination, Headers}),
+	gen_statem2:cast(ServerPid, {connect, ReplyTo, StreamRef, Destination, Headers}),
 	StreamRef.
 
 %% Awaiting gun messages.
@@ -683,11 +683,11 @@ flush_ref(StreamRef) ->
 
 -spec cancel(pid(), reference()) -> ok.
 cancel(ServerPid, StreamRef) ->
-	gen_statem:cast(ServerPid, {cancel, self(), StreamRef}).
+	gen_statem2:cast(ServerPid, {cancel, self(), StreamRef}).
 
 -spec stream_info(pid(), reference()) -> {ok, map() | undefined} | {error, not_connected}.
 stream_info(ServerPid, StreamRef) ->
-	gen_statem:call(ServerPid, {stream_info, StreamRef}).
+	gen_statem2:call(ServerPid, {stream_info, StreamRef}).
 
 %% @todo Allow upgrading an HTTP/1.1 connection to HTTP/2.
 %% http2_upgrade
@@ -701,28 +701,28 @@ ws_upgrade(ServerPid, Path) ->
 -spec ws_upgrade(pid(), iodata(), req_headers()) -> reference().
 ws_upgrade(ServerPid, Path, Headers) ->
 	StreamRef = make_ref(),
-	gen_statem:cast(ServerPid, {ws_upgrade, self(), StreamRef, Path, Headers}),
+	gen_statem2:cast(ServerPid, {ws_upgrade, self(), StreamRef, Path, Headers}),
 	StreamRef.
 
 -spec ws_upgrade(pid(), iodata(), req_headers(), ws_opts()) -> reference().
 ws_upgrade(ServerPid, Path, Headers, Opts) ->
 	ok = gun_ws:check_options(Opts),
 	StreamRef = make_ref(),
-	gen_statem:cast(ServerPid, {ws_upgrade, self(), StreamRef, Path, Headers, Opts}),
+	gen_statem2:cast(ServerPid, {ws_upgrade, self(), StreamRef, Path, Headers, Opts}),
 	StreamRef.
 
 %% @todo ws_send/2 will need to be deprecated in favor of a variant with StreamRef.
 %% But it can be kept for the time being since it can still work for HTTP/1.1.
 -spec ws_send(pid(), ws_frame() | [ws_frame()]) -> ok.
 ws_send(ServerPid, Frames) ->
-	gen_statem:cast(ServerPid, {ws_send, self(), Frames}).
+	gen_statem2:cast(ServerPid, {ws_send, self(), Frames}).
 
 %% Internals.
 
 callback_mode() -> state_functions.
 
 start_link(Owner, Host, Port, Opts) ->
-	gen_statem:start_link(?MODULE, {Owner, Host, Port, Opts}, []).
+	gen_statem2:start_link(?MODULE, {Owner, Host, Port, Opts}, []).
 
 init({Owner, Host, Port, Opts}) ->
 	Retry = maps:get(retry, Opts, 0),
