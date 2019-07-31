@@ -191,19 +191,32 @@ do_handshake(Socket, Host, Port, Options) ->
 check_response(Socket, Timeout) ->
   case gen_tcp:recv(Socket, 0, Timeout) of
     {ok, Data} ->
-      check_status(Data);
+      {_Version, Status, _Msg, Rest} = cow_http:parse_status_line(Data),
+      if
+        Status == 200 orelse Status == 201 ->
+          {Headers, _} = cow_http:parse_headers(Rest),
+          case lists:keyfind(<<"x-hola-ip">>, 1, Headers) of
+            {_, Addr} ->
+              put(x_hola_ip, Addr);
+            false ->
+              skip
+          end,
+          ok;
+        true ->
+          error_logger:error_msg("proxy error: ~w~n", [Data]),
+          {error, proxy_error}
+      end;
     Error ->
       Error
   end.
 
-check_status(<< "HTTP/1.1 200", _/bits >>) ->
-  ok;
-check_status(<< "HTTP/1.1 201", _/bits >>) ->
-  ok;
-check_status(<< "HTTP/1.0 200", _/bits >>) ->
-  ok;
-check_status(<< "HTTP/1.0 201", _/bits >>) ->
-  ok;
-check_status(_Else) ->
-%%   error_logger:error_msg("proxy error: ~w~n", [Else]),
-  {error, proxy_error}.
+%%check_status(<< "HTTP/1.1 200", _/bits >>) ->
+%%  ok;
+%%check_status(<< "HTTP/1.1 201", _/bits >>) ->
+%%  ok;
+%%check_status(<< "HTTP/1.0 200", _/bits >>) ->
+%%  ok;
+%%check_status(<< "HTTP/1.0 201", _/bits >>) ->
+%%  ok;
+%%check_status(_Else) ->
+%%  {error, proxy_error}.

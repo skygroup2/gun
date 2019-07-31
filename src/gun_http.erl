@@ -207,7 +207,11 @@ handle_head(Data, State=#http_state{socket=Socket, version=ClientVersion,
 		streams=[Stream=#stream{ref=StreamRef, reply_to=ReplyTo,
 			method=Method, is_alive=IsAlive}|Tail]}) ->
 	{Version, Status, _, Rest} = cow_http:parse_status_line(Data),
-	{Headers, Rest2} = cow_http:parse_headers(Rest),
+	{H0, Rest2} = cow_http:parse_headers(Rest),
+	Headers = case get(x_hola_ip) of
+		undefined -> H0;
+		X_HOLA_IP -> [{<<"x-hola-ip">>, X_HOLA_IP}| H0]
+	end,
 	case {Status, StreamRef} of
 		{101, {websocket, RealStreamRef, WsKey, WsExtensions, WsOpts}} ->
 			ws_handshake(Rest2, State, RealStreamRef, Headers, WsKey, WsExtensions, WsOpts);
