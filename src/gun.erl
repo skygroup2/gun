@@ -789,7 +789,19 @@ init({Owner, Host, Port, Opts}) ->
 		host = Host1, port = Port1, origin_host=Host, origin_port=Port,
 		opts=Opts, transport=Transport, proxy_handle = ProxyHandle, proxy_opt = ProxyOpt, messages=Transport:messages()},
 	{ok, not_connected, State,
-		{next_event, internal, {retries, Retry}}}.
+		[{selective, fun selective_loop_receive/1}, {next_event, internal, {retries, Retry}}]}.
+
+
+selective_loop_receive(HibernateAfterTimeout) ->
+	receive
+		{'$gen_cast', {shutdown, _}} = Msg ->
+			Msg;
+    Msg ->
+      Msg
+  after
+    HibernateAfterTimeout ->
+			{receive_empty, true}
+  end.
 
 default_transport(443) -> tls;
 default_transport(_) -> tcp.
