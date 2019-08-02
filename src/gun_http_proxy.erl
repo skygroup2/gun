@@ -203,7 +203,7 @@ check_response(Socket, Timeout) ->
           end,
           ok;
         true ->
-          error_logger:error_msg("proxy error: ~w~n", [Data]),
+%%          error_logger:error_msg("proxy error: ~w~n", [Data]),
           {error, proxy_error}
       end;
     Error ->
