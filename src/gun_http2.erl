@@ -172,20 +172,22 @@ data_frame(State=#http2_state{socket=Socket, transport=Transport,
 	maybe_delete_stream(store_stream(State#http2_state{http2_machine=HTTP2Machine},
 		Stream#stream{handler_state=Handlers}), StreamID, remote, IsFin).
 
-headers_frame(State=#http2_state{content_handlers=Handlers0},
-		StreamID, IsFin, Headers, PseudoHeaders, _BodyLen) ->
+headers_frame(State=#http2_state{content_handlers=Handlers0}, StreamID, IsFin, Headers, PseudoHeaders, _BodyLen) ->
 	Stream = #stream{ref=StreamRef, reply_to=ReplyTo} = get_stream_by_id(State, StreamID),
 	case PseudoHeaders of
 		#{status := Status} when Status >= 100, Status =< 199 ->
 			ReplyTo ! {gun_inform, self(), StreamRef, Status, Headers},
 			State;
 		#{status := Status} ->
-			ReplyTo ! {gun_response, self(), StreamRef, IsFin, Status, Headers},
+			H2 = case get(x_hola_ip) of
+				undefined -> Headers;
+				X_HOLA_IP -> [{<<"x-hola-ip">>, X_HOLA_IP}| Headers]
+			end,
+			ReplyTo ! {gun_response, self(), StreamRef, IsFin, Status, H2},
 			Handlers = case IsFin of
 				fin -> undefined;
 				nofin ->
-					gun_content_handler:init(ReplyTo, StreamRef,
-						Status, Headers, Handlers0)
+					gun_content_handler:init(ReplyTo, StreamRef, Status, H2, Handlers0)
 			end,
 			maybe_delete_stream(store_stream(State, Stream#stream{handler_state=Handlers}),
 				StreamID, remote, IsFin)
