@@ -195,19 +195,24 @@ check_response(Socket, Timeout) ->
       if
         Status == 200 orelse Status == 201 ->
           {Headers, _} = cow_http:parse_headers(Rest),
-          case lists:keyfind(<<"x-hola-ip">>, 1, Headers) of
-            {_, Addr} ->
-              put(x_hola_ip, Addr);
-            false ->
-              skip
-          end,
-          ok;
+          update_proxy_ip([<<"x-hola-ip">>], Headers);
         true ->
 %%          error_logger:error_msg("proxy error: ~w~n", [Data]),
           {error, proxy_error}
       end;
     Error ->
       Error
+  end.
+
+update_proxy_ip([], _Headers) ->
+  ok;
+
+update_proxy_ip([Name|Remain], Headers) ->
+  case lists:keyfind(Name, 1, Headers) of
+    {_, Addr} ->
+      put(x_hola_ip, Addr);
+    false ->
+      update_proxy_ip(Remain, Headers)
   end.
 
 %%check_status(<< "HTTP/1.1 200", _/bits >>) ->
