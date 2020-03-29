@@ -197,6 +197,8 @@ check_response(Socket, Timeout) ->
           {Headers, _} = cow_http:parse_headers(Rest),
           update_proxy_ip([<<"x-hola-ip">>], Headers),
           ok;
+        Status == 560 ->
+          {error, out_of_thread};
         true ->
 %%          error_logger:error_msg("proxy error: ~w~n", [Data]),
           {error, proxy_error}
