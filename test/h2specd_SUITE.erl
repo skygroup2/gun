@@ -1,4 +1,4 @@
-%% Copyright (c) 2018-2019, Loïc Hoguin <essen@ninenines.eu>
+%% Copyright (c) 2018, Loïc Hoguin <essen@ninenines.eu>
 %%
 %% Permission to use, copy, modify, and/or distribute this software for any
 %% purpose with or without fee is hereby granted, provided that the above
@@ -26,16 +26,12 @@ all() ->
 
 init_per_suite(Config) ->
 	case os:getenv("H2SPECD") of
-		false -> {skip, "$H2SPECD isn't set."};
-		H2specd ->
-			case filelib:is_file(H2specd) of
-				false -> {skip, "$H2SPECD file not found."};
-				true ->
-					%% We ensure that SASL is started for this test suite
-					%% to have the crash reports in the CT logs.
-					{ok, Apps} = application:ensure_all_started(sasl),
-					[{sasl_started, Apps =/= []}|Config]
-			end
+		false -> skip;
+		_ ->
+			%% We ensure that SASL is started for this test suite
+			%% to have the crash reports in the CT logs.
+			{ok, Apps} = application:ensure_all_started(sasl),
+			[{sasl_started, Apps =/= []}|Config]
 	end.
 
 end_per_suite(Config) ->
@@ -72,12 +68,7 @@ receive_infinity(Port, Acc) ->
 	receive
 		{Port, {data, {eol, Line}}} ->
 			ct:log("~ts", [Line]),
-			%% Somehow we may receive the same line multiple times.
-			%% We therefore only print if it's a line we didn't print before.
-			case lists:member(Line, Acc) of
-				false -> io:format(user, "~s~n", [Line]);
-				true -> ok
-			end,
+			io:format(user, "~s~n", [Line]),
 			receive_infinity(Port, [Line|Acc]);
 		{Port, Reason={exit_status, _}} ->
 			ct:log("~ts", [[[L, $\n] || L <- lists:reverse(Acc)]]),
@@ -88,8 +79,7 @@ run_tests() ->
 	timer:sleep(1000),
 	Tests = scrape_tests(),
 	ct:pal("Test ports: ~p~n", [Tests]),
-	run_tests(Tests),
-	timer:sleep(1000).
+	run_tests(Tests).
 
 run_tests([]) ->
 	ok;
@@ -109,7 +99,8 @@ run_tests([Port|Tail]) ->
 				ok
 		after 100 ->
 			ok
-		end
+		end,
+		ok = gun:close(Conn)
 	after
 		run_tests(Tail)
 	end.
