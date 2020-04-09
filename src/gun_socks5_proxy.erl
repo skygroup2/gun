@@ -22,8 +22,6 @@
   shutdown/2,
   sockname/1]).
 
--define(TIMEOUT, 60000).
-
 -type socks5_socket() :: {atom(), inet:socket()}.
 -export_type([socks5_socket/0]).
 
@@ -65,13 +63,13 @@ connect(Host, Port, Opts, Timeout) when is_list(Host), is_integer(Port),
   %% connect to the socks 5 proxy
   case gen_tcp:connect(ProxyHost, ProxyPort, ConnectOpts, Timeout) of
     {ok, Socket} ->
-      case do_handshake(Socket, Host, Port, Opts) of
+      case do_handshake(Socket, Host, Port, Opts, Timeout) of
         ok ->
           case Transport of
             gun_tls ->
               SSLOpts = ssl_opts(Host, Opts),
               %% upgrade the tcp connection
-              case ssl:connect(Socket, SSLOpts) of
+              case ssl:connect(Socket, SSLOpts, Timeout) of
                 {ok, SslSocket} ->
                   {ok, {Transport, SslSocket}};
                 Error ->
@@ -147,33 +145,33 @@ sockname({Transport, Socket}) ->
   Transport:sockname(Socket).
 
 %% private functions
-do_handshake(Socket, Host, Port, Options) ->
+do_handshake(Socket, Host, Port, Options, Timeout) ->
   ProxyUser = proplists:get_value(socks5_user, Options),
   ProxyPass = proplists:get_value(socks5_pass, Options, <<>>),
   case ProxyUser of
     undefined ->
       %% no auth
       ok = gen_tcp:send(Socket, << 5, 1, 0 >>),
-      case gen_tcp:recv(Socket, 2, ?TIMEOUT) of
+      case gen_tcp:recv(Socket, 2, Timeout) of
         {ok, << 5, 0 >>} ->
-          do_connection(Socket, Host, Port, Options);
+          do_connection(Socket, Host, Port, Options, Timeout);
         {ok, _Reply} ->
           {error, unknown_reply};
         Error ->
           Error
       end;
     _ ->
-      case do_authentication(Socket, ProxyUser, ProxyPass) of
+      case do_authentication(Socket, ProxyUser, ProxyPass, Timeout) of
         ok ->
-          do_connection(Socket, Host, Port, Options);
+          do_connection(Socket, Host, Port, Options, Timeout);
         Error ->
           Error
       end
   end.
 
-do_authentication(Socket, User, Pass) ->
+do_authentication(Socket, User, Pass, Timeout) ->
   ok = gen_tcp:send(Socket, << 5, 1, 2 >>),
-  case gen_tcp:recv(Socket, 2, ?TIMEOUT) of
+  case gen_tcp:recv(Socket, 2, Timeout) of
     {ok, <<5, 0>>} ->
       ok;
     {ok, <<5, 2>>} ->
@@ -183,7 +181,7 @@ do_authentication(Socket, User, Pass) ->
         User, << PassLength >>,
         Pass]),
       ok = gen_tcp:send(Socket, Msg),
-      case gen_tcp:recv(Socket, 2, ?TIMEOUT) of
+      case gen_tcp:recv(Socket, 2, Timeout) of
         {ok, <<1, 0>>} ->
           ok;
         {ok, _} ->
@@ -198,14 +196,14 @@ do_authentication(Socket, User, Pass) ->
   end.
 
 
-do_connection(Socket, Host, Port, Options) ->
+do_connection(Socket, Host, Port, Options, Timeout) ->
   Resolve = proplists:get_value(socks5_resolve, Options, remote),
   case addr(Host, Port, Resolve) of
     Addr when is_binary(Addr) ->
       ok = gen_tcp:send(Socket, << 5, 1, 0, Addr/binary >>),
-      case gen_tcp:recv(Socket, 4, ?TIMEOUT) of
+      case gen_tcp:recv(Socket, 4, Timeout) of
         {ok, << 5, 0, 0, AType>>} ->
-          BoundAddr = recv_addr_port(AType, gen_tcp, Socket),
+          BoundAddr = recv_addr_port(AType, gen_tcp, Socket, Timeout),
           check_connection(BoundAddr);
         {ok, _} ->
           {error, badarg};
@@ -243,17 +241,17 @@ addr(Host, Port, Resolve) ->
       end
   end.
 
-recv_addr_port(1 = AType, Transport, Socket) -> % IPv4
-   {ok, Data} = Transport:recv(Socket, 6, ?TIMEOUT),
+recv_addr_port(1 = AType, Transport, Socket, Timeout) -> % IPv4
+   {ok, Data} = Transport:recv(Socket, 6, Timeout),
    <<AType, Data/binary>>;
-recv_addr_port(4 = AType, Transport, Socket) -> % IPv6
-   {ok, Data} = Transport:recv(Socket, 18, ?TIMEOUT),
+recv_addr_port(4 = AType, Transport, Socket, Timeout) -> % IPv6
+   {ok, Data} = Transport:recv(Socket, 18, Timeout),
    <<AType, Data/binary>>;
-recv_addr_port(3 = AType, Transport, Socket) -> % Domain
-   {ok, <<DLen/integer>>} = Transport:recv(Socket, 1, ?TIMEOUT),
-   {ok, AddrPort} = Transport:recv(Socket, DLen + 2, ?TIMEOUT),
+recv_addr_port(3 = AType, Transport, Socket, Timeout) -> % Domain
+   {ok, <<DLen/integer>>} = Transport:recv(Socket, 1, Timeout),
+   {ok, AddrPort} = Transport:recv(Socket, DLen + 2, Timeout),
    <<AType, DLen, AddrPort/binary>>;
-recv_addr_port(_, _, _) ->
+recv_addr_port(_, _, _, _) ->
    error.
 
 check_connection(<< 3, _DomainLen:8, _Domain/binary >>) ->

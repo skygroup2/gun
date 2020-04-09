@@ -23,8 +23,6 @@
   sockname/1
 ]).
 
--define(TIMEOUT, infinity).
-
 -type http_socket() :: {atom(), inet:socket()}.
 -export_type([http_socket/0]).
 
@@ -65,9 +63,9 @@ connect(ProxyHost, ProxyPort, Opts, Timeout)
   ConnectOpts = gun_util:filter_options(Opts, AcceptedOpts, BaseOpts),
 
   %% connnect to the proxy, and upgrade the socket if needed.
-  case gen_tcp:connect(ProxyHost, ProxyPort, ConnectOpts) of
+  case gen_tcp:connect(ProxyHost, ProxyPort, ConnectOpts, Timeout) of
     {ok, Socket} ->
-      case do_handshake(Socket, Host, Port, Opts) of
+      case do_handshake(Socket, Host, Port, Opts, Timeout) of
         ok ->
           %% if we are connecting to a remote https source, we
           %% upgrade the connection socket to handle SSL.
@@ -151,31 +149,27 @@ sockname({Transport, Socket}) ->
   Transport:sockname(Socket).
 
 %% private functions
-do_handshake(Socket, Host, Port, Options) ->
+do_handshake(Socket, Host, Port, Options, Timeout) ->
   ProxyUser = proplists:get_value(connect_user, Options),
   ProxyPass = proplists:get_value(connect_pass, Options, <<>>),
   ProxyPort = proplists:get_value(connect_port, Options),
-  Timeout = proplists:get_value(connect_timeout, Options, 30000),
-
   %% set defaults headers
   HostHdr = case ProxyPort of
-              80 ->
-                list_to_binary(Host);
-              _ ->
-                iolist_to_binary([Host, ":", integer_to_list(Port)])
-            end,
-  UA =  <<"gun/1.3.0">>,
-  Headers0 = [<<"Host: ", HostHdr/binary>>,
-    <<"User-Agent: ", UA/binary >>],
-
+    80 ->
+      list_to_binary(Host);
+    _ ->
+      iolist_to_binary([Host, ":", integer_to_list(Port)])
+  end,
+  UA =  <<"gun/1.3.2">>,
+  Headers0 = [<<"Host: ", HostHdr/binary>>, <<"User-Agent: ", UA/binary >>],
   Headers = case ProxyUser of
-              undefined ->
-                Headers0;
-              _ ->
-                Credentials = base64:encode(<<ProxyUser/binary, ":",
-                  ProxyPass/binary>>),
-                Headers0 ++ [<< "Proxy-Authorization: Basic ", Credentials/binary >>]
-            end,
+    undefined ->
+      Headers0;
+    _ ->
+      Credentials = base64:encode(<<ProxyUser/binary, ":",
+        ProxyPass/binary>>),
+      Headers0 ++ [<< "Proxy-Authorization: Basic ", Credentials/binary >>]
+  end,
   Path = iolist_to_binary([Host, ":", integer_to_list(Port)]),
 
   Payload = [<< "CONNECT ", Path/binary, " HTTP/1.1", "\r\n" >>,
