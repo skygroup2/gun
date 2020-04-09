@@ -775,12 +775,6 @@ init({Owner, Host, Port, Opts}) ->
       PO = [{socks5_host, ProxyHost}, {socks5_port, ProxyPort}, {socks5_user, ProxyUser}, {socks5_pass, ProxyPass},
         {socks5_resolve, ProxyResolve}, {socks5_transport, Transport}, {insecure, Insecure}, binary, {active, false}],
       {gun_socks5_proxy, PO, Host, Port};
-    {remote, RemoteHost, RemotePort} ->
-      RemoteProxy = maps:get(remote_proxy, Opts, []),
-			Insecure = maps:get(insecure, Opts, true),
-      PO = [{remote_host, RemoteHost}, {remote_port, RemotePort}, {remote_proxy, RemoteProxy}, {remote_transport, Transport},
-				{insecure, Insecure}, binary, {active, false}],
-      {gun_remote_proxy, PO, Host, Port};
 	 	_ ->
       {Transport, [binary, {active, false}], Host, Port}
  	end,

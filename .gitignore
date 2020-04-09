@@ -10,3 +10,4 @@ ebin/*.beam
 logs
 test/*.beam
 rebar.lock
+rebar3
