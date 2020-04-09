@@ -186,11 +186,15 @@ do_authentication(Socket, User, Pass) ->
       case gen_tcp:recv(Socket, 2, ?TIMEOUT) of
         {ok, <<1, 0>>} ->
           ok;
-        _ ->
-          {error, not_authenticated}
+        {ok, _} ->
+          {error, not_authenticated};
+        {error, Reason} ->
+          {error, Reason}
       end;
-    _ ->
-      {error, not_authenticated}
+    {ok, _} ->
+      {error, not_authenticated};
+    {error, Reason} ->
+      {error, Reason}
   end.
 
 
