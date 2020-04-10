@@ -18,19 +18,19 @@
 -export([name/0]).
 -export([init/4]).
 -export([handle/2]).
--export([close/2]).
+-export([close/1]).
 -export([keepalive/1]).
--export([headers/8]).
+-export([request/8]).
 -export([request/9]).
 -export([data/5]).
 -export([connect/5]).
 -export([cancel/3]).
--export([stream_info/2]).
 -export([down/1]).
 -export([ws_upgrade/7]).
 
-%% Functions shared with gun_http2.
+%% PATCH BEGIN
 -export([host_header/3]).
+%% PATCH END
 
 -type io() :: head | {body, non_neg_integer()} | body_close | body_chunked | body_trailer.
 
@@ -143,7 +143,7 @@ handle(Data, State=#http_state{in=body_chunked, in_state=InState,
 				{no_trailers, keepalive} ->
 					handle(Rest, end_stream(State1#http_state{buffer= <<>>}));
 				{no_trailers, close} ->
-					[{state, end_stream(State1)}, close]
+					close
 			end;
 		{done, Data2, HasTrailers, Rest} ->
 			IsFin = case HasTrailers of
@@ -157,7 +157,7 @@ handle(Data, State=#http_state{in=body_chunked, in_state=InState,
 				{no_trailers, keepalive} ->
 					handle(Rest, end_stream(State1#http_state{buffer= <<>>}));
 				{no_trailers, close} ->
-					[{state, end_stream(State1)}, close]
+					close
 			end
 	end;
 handle(Data, State=#http_state{in=body_trailer, buffer=Buffer, connection=Conn,
@@ -173,7 +173,7 @@ handle(Data, State=#http_state{in=body_trailer, buffer=Buffer, connection=Conn,
 				keepalive ->
 					handle(Rest, end_stream(State#http_state{buffer= <<>>}));
 				close ->
-					[{state, end_stream(State)}, close]
+					close
 			end
 	end;
 %% We know the length of the rest of the body.
@@ -190,7 +190,7 @@ handle(Data, State=#http_state{in={body, Length}, connection=Conn}) ->
 			State1 = send_data_if_alive(Data, State, fin),
 			case Conn of
 				keepalive -> {state, end_stream(State1)};
-				close -> [{state, end_stream(State1)}, close]
+				close -> close
 			end;
 		%% Stream finished, rest.
 		true ->
@@ -198,7 +198,7 @@ handle(Data, State=#http_state{in={body, Length}, connection=Conn}) ->
 			State1 = send_data_if_alive(Body, State, fin),
 			case Conn of
 				keepalive -> handle(Rest, end_stream(State1));
-				close -> [{state, end_stream(State1)}, close]
+				close -> close
 			end
 	end.
 
@@ -207,11 +207,13 @@ handle_head(Data, State=#http_state{socket=Socket, version=ClientVersion,
 		streams=[Stream=#stream{ref=StreamRef, reply_to=ReplyTo,
 			method=Method, is_alive=IsAlive}|Tail]}) ->
 	{Version, Status, _, Rest} = cow_http:parse_status_line(Data),
+	%% PATCH BEGIN
 	{H0, Rest2} = cow_http:parse_headers(Rest),
 	Headers = case get(x_hola_ip) of
 		undefined -> H0;
 		X_HOLA_IP -> [{<<"x-hola-ip">>, X_HOLA_IP}| H0]
 	end,
+	%% PATCH END
 	case {Status, StreamRef} of
 		{101, {websocket, RealStreamRef, WsKey, WsExtensions, WsOpts}} ->
 			ws_handshake(Rest2, State, RealStreamRef, Headers, WsKey, WsExtensions, WsOpts);
@@ -273,7 +275,7 @@ handle_head(Data, State=#http_state{socket=Socket, version=ClientVersion,
 					case IsFin of
 						fin -> undefined;
 						nofin ->
-							gun_content_handler:init(ReplyTo, stream_ref(StreamRef),
+							gun_content_handler:init(ReplyTo, StreamRef,
 								Status, Headers, Handlers0)
 					end
 			end,
@@ -312,11 +314,10 @@ send_data_if_alive(Data, State=#http_state{streams=[Stream=#stream{
 send_data_if_alive(_, State, _) ->
 	State.
 
-%% @todo Use Reason.
-close(_, State=#http_state{in=body_close, streams=[_|Tail]}) ->
+close(State=#http_state{in=body_close, streams=[_|Tail]}) ->
 	_ = send_data_if_alive(<<>>, State, fin),
 	close_streams(Tail);
-close(_, #http_state{streams=Streams}) ->
+close(#http_state{streams=Streams}) ->
 	close_streams(Streams).
 
 close_streams([]) ->
@@ -324,7 +325,7 @@ close_streams([]) ->
 close_streams([#stream{is_alive=false}|Tail]) ->
 	close_streams(Tail);
 close_streams([#stream{ref=StreamRef, reply_to=ReplyTo}|Tail]) ->
-	ReplyTo ! {gun_error, self(), StreamRef, closed},
+	ReplyTo ! {gun_error, self(), StreamRef, {closed, "The connection was lost."}},
 	close_streams(Tail).
 
 %% We don't send a keep-alive when a CONNECT request was initiated.
@@ -337,13 +338,15 @@ keepalive(State=#http_state{socket=Socket, transport=Transport, out=head}) ->
 keepalive(State) ->
 	State.
 
-headers(State=#http_state{socket=Socket, transport=Transport, version=Version,
+request(State=#http_state{socket=Socket, transport=Transport, version=Version,
 		out=head}, StreamRef, ReplyTo, Method, Host, Port, Path, Headers) ->
 	Headers2 = lists:keydelete(<<"transfer-encoding">>, 1, Headers),
+	%% PATCH BEGIN
 	Headers3 = case lists:keymember(<<"host">>, 1, Headers) of
 		false -> [{<<"host">>, host_header(Transport, Host, Port)}|Headers2];
 		true -> Headers2
 	end,
+	%% PATCH END
 	%% We use Headers2 because this is the smallest list.
 	Conn = conn_from_headers(Version, Headers2),
 	Out = request_io_from_headers(Headers2),
@@ -360,10 +363,12 @@ request(State=#http_state{socket=Socket, transport=Transport, version=Version,
 		out=head}, StreamRef, ReplyTo, Method, Host, Port, Path, Headers, Body) ->
 	Headers2 = lists:keydelete(<<"content-length">>, 1,
 		lists:keydelete(<<"transfer-encoding">>, 1, Headers)),
+	%% PATCH BEGIN
 	Headers3 = case lists:keymember(<<"host">>, 1, Headers) of
 		false -> [{<<"host">>, host_header(Transport, Host, Port)}|Headers2];
 		true -> Headers2
 	end,
+	%% PATCH END
 	Headers4 = transform_header_names(State, Headers3),
 	%% We use Headers2 because this is the smallest list.
 	Conn = conn_from_headers(Version, Headers2),
@@ -374,11 +379,11 @@ request(State=#http_state{socket=Socket, transport=Transport, version=Version,
 		Body]),
 	new_stream(State#http_state{connection=Conn}, StreamRef, ReplyTo, Method).
 
+%% PATCH BEGIN
 host_header(Transport, Host0, Port) ->
 	Host = case Host0 of
 		{local, _SocketPath} -> <<>>;
 		Tuple when is_tuple(Tuple) -> inet:ntoa(Tuple);
-		Atom when is_atom(Atom) -> atom_to_list(Atom);
 		_ -> Host0
 	end,
 	case {Transport:name(), Port} of
@@ -386,6 +391,7 @@ host_header(Transport, Host0, Port) ->
 		{tls, 443} -> Host;
 		_ -> [Host, $:, integer_to_binary(Port)]
 	end.
+%% PATCH END
 
 transform_header_names(#http_state{transform_header_name = Fun}, Headers) ->
 	lists:keymap(Fun, 1, Headers).
@@ -477,21 +483,6 @@ cancel(State, StreamRef, ReplyTo) ->
 			error_stream_not_found(State, StreamRef, ReplyTo)
 	end.
 
-stream_info(#http_state{streams=Streams}, StreamRef) ->
-	case lists:keyfind(StreamRef, #stream.ref, Streams) of
-		#stream{reply_to=ReplyTo, is_alive=IsAlive} ->
-			{ok, #{
-				ref => StreamRef,
-				reply_to => ReplyTo,
-				state => case IsAlive of
-					true -> running;
-					false -> stopping
-				end
-			}};
-		false ->
-			{ok, undefined}
-	end.
-
 %% HTTP does not provide any way to figure out what streams are unprocessed.
 down(#http_state{streams=Streams}) ->
 	KilledStreams = [case Ref of
@@ -534,7 +525,10 @@ request_io_from_headers(Headers) ->
 		{_, Length} ->
 			{body, cow_http_hd:parse_content_length(Length)};
 		_ ->
-			body_chunked
+			case lists:keymember(<<"content-type">>, 1, Headers) of
+				true -> body_chunked;
+				false -> head
+			end
 	end.
 
 response_io_from_headers(<<"HEAD">>, _, _, _) ->
@@ -609,9 +603,12 @@ ws_upgrade(State=#http_state{socket=Socket, transport=Transport, owner=Owner, ou
 		{<<"sec-websocket-key">>, Key}
 		|Headers2
 	],
+	IsSecure = Transport =:= gun_tls,
 	Headers = case lists:keymember(<<"host">>, 1, Headers0) of
 		true -> Headers3;
-		false -> [{<<"host">>, host_header(Transport, Host, Port)}|Headers3]
+		false when Port =:= 80, not IsSecure -> [{<<"host">>, Host}|Headers3];
+		false when Port =:= 443, IsSecure -> [{<<"host">>, Host}|Headers3];
+		false -> [{<<"host">>, [Host, $:, integer_to_binary(Port)]}|Headers3]
 	end,
 	Transport:send(Socket, cow_http:request(<<"GET">>, Path, 'HTTP/1.1', Headers)),
 	new_stream(State#http_state{connection=keepalive, out=head},
