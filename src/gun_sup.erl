@@ -28,6 +28,7 @@
 
 -spec start_link() -> {ok, pid()}.
 start_link() ->
+	gun_stats:create_db(),
 	supervisor:start_link({local, ?SUPERVISOR}, ?MODULE, []).
 
 %% supervisor.
