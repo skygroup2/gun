@@ -1,15 +1,6 @@
-%%%-------------------------------------------------------------------
-%%% @author MrR
-%%% @copyright (C) 2018, GSKYNET
-%%% @doc
-%%%
-%%% @end
-%%% Created : 31. Oct 2018 4:01 PM
-%%%-------------------------------------------------------------------
 -module(gun_socks5_proxy).
 
 -export([
-  messages/1,
   connect/3,
   connect/4,
   recv/2,
@@ -25,24 +16,8 @@
 -type socks5_socket() :: {atom(), inet:socket()}.
 -export_type([socks5_socket/0]).
 
--ifdef(no_proxy_sni_support).
-
-ssl_opts(Host, Opts) ->
-  gun_util:ssl_opts(Host, Opts).
-
--else.
-
 ssl_opts(Host, Opts) ->
   [{server_name_indication, Host} | gun_util:ssl_opts(Host,Opts)].
-
--endif.
-
-%% @doc Atoms used to identify messages in {active, once | true} mode.
-messages({gun_tls, _}) ->
-  {ssl, ssl_closed, ssl_error};
-messages({_, _}) ->
-  {tcp, tcp_closed, tcp_error}.
-
 
 connect(Host, Port, Opts) ->
   connect(Host, Port, Opts, 35000).
@@ -58,7 +33,8 @@ connect(Host, Port, Opts, Timeout) when is_list(Host), is_integer(Port),
   %% filter connection options
   AcceptedOpts =  [linger, nodelay, send_timeout, send_timeout_close, raw, inet6, ip],
   BaseOpts = [binary, {active, false}, {packet, 0}, {keepalive,  true}, {nodelay, true}],
-  ConnectOpts = gun_util:filter_options(Opts, AcceptedOpts, BaseOpts),
+  TransOpts= proplists:get_value(tcp_opt, Opts, []),
+  ConnectOpts = gun_util:filter_options(TransOpts, AcceptedOpts, BaseOpts),
 
   %% connect to the socks 5 proxy
   case gen_tcp:connect(ProxyHost, ProxyPort, ConnectOpts, Timeout) of

@@ -692,46 +692,121 @@ proc_lib_hack(Parent, Owner, Host, Port, Opts) ->
 
 init(Parent, Owner, Host, Port, Opts) ->
   ok = proc_lib:init_ack(Parent, {ok, self()}),
-  Retry = maps:get(retry, Opts, 5),
+  Retry = maps:get(retry, Opts, 0),
   Transport = case maps:get(transport, Opts, default_transport(Port)) of
                 tcp -> gun_tcp;
                 tls -> gun_tls
               end,
-
+  % PATCH BEGIN
+  {ProxyHandle, ProxyOpt, Host1, Port1} = case maps:get(proxy, Opts, undefined) of
+	 	Url when is_binary(Url) orelse is_list(Url) ->
+      Url1 = gun_url:parse_url(Url),
+      #{host := ProxyHost, port := ProxyPort} = gun_url:normalize(Url1),
+      {ProxyUser, ProxyPass} =
+        case maps:get(proxy_auth, Opts) of
+          {U, P} -> {U, P};
+          _ -> {undefined, undefined}
+        end,
+			Insecure = maps:get(insecure, Opts, true),
+      PO = [{connect_host, Host}, {connect_port, Port}, {connect_transport, Transport},
+        {connect_user, ProxyUser}, {connect_pass, ProxyPass}, {insecure, Insecure}],
+      select_http_proxy(Transport, PO, ProxyHost, ProxyPort);
+    {ProxyHost, ProxyPort} ->
+      {ProxyUser, ProxyPass} =
+        case maps:get(proxy_auth, Opts, nil) of
+          {U, P} -> {U, P};
+          _ -> {undefined, undefined}
+        end,
+			Insecure = maps:get(insecure, Opts, true),
+      PO = [{connect_host, Host}, {connect_port, Port}, {connect_transport, Transport},
+        {connect_user, ProxyUser}, {connect_pass, ProxyPass}, {insecure, Insecure}],
+      select_http_proxy(Transport, PO, ProxyHost, ProxyPort);
+    {connect, ProxyHost, ProxyPort} ->
+      {ProxyUser, ProxyPass} =
+        case maps:get(proxy_auth, Opts, nil) of
+          {U, P} -> {U, P};
+          _ -> {undefined, undefined}
+        end,
+			Insecure = maps:get(insecure, Opts, true),
+      PO = [{connect_host, Host}, {connect_port, Port}, {connect_transport, Transport},
+        {connect_user, ProxyUser}, {connect_pass, ProxyPass}, {insecure, Insecure}],
+      select_http_proxy(Transport, PO, ProxyHost, ProxyPort);
+    {socks5, ProxyHost, ProxyPort} ->
+      {ProxyUser, ProxyPass} =
+        case maps:get(proxy_auth, Opts, nil) of
+          {U, P} -> {U, P};
+          _ -> {undefined, undefined}
+        end,
+			Insecure = maps:get(insecure, Opts, true),
+      ProxyResolve = maps:get(socks5_resolve, Opts, undefined),
+      PO = [{socks5_host, ProxyHost}, {socks5_port, ProxyPort}, {socks5_user, ProxyUser}, {socks5_pass, ProxyPass},
+        {socks5_resolve, ProxyResolve}, {socks5_transport, Transport}, {insecure, Insecure}],
+      {gun_socks5_proxy, PO, Host, Port};
+	 	_ ->
+      {Transport, [], Host, Port}
+ 	end,
+  gun_stats:new_connection(self()),
+  gun_stats:update_counter(active_connection, 1),
+  gun_stats:update_counter(total_connection, 1),
+  % PATCH END
   OwnerRef = monitor(process, Owner),
   transport_connect(#state{parent = Parent, owner = Owner, owner_ref = OwnerRef,
-    host = Host, port = Port, origin_host = Host, origin_port = Port,
-    opts = Opts, transport = Transport}, Retry).
+    host = Host1, port = Port1, origin_host = Host, origin_port = Port,
+    opts = Opts, transport = Transport, proxy_handle = ProxyHandle, proxy_opt = ProxyOpt}, Retry).
 
 default_transport(443) -> tls;
 default_transport(_) -> tcp.
 
-transport_connect(State = #state{host = Host, port = Port, opts = Opts, transport = Transport = gun_tls}, Retries) ->
-  TransportOpts = [binary, {active, false} | ensure_alpn(
-    maps:get(protocols, Opts, [http2, http]),
-    maps:get(transport_opts, Opts, []))],
-  case Transport:connect(Host, Port, TransportOpts, maps:get(connect_timeout, Opts, infinity)) of
-    {ok, Socket} ->
+
+transport_connect(State = #state{host = Host, port = Port, opts = Opts,
+  proxy_handle = ProxyHandle, proxy_opt = ProxyOpts, transport = gun_tls}, Retries) ->
+  TransportOpts = format_proxy_opts(ProxyHandle, ProxyOpts,
+    [binary, {active, false} | ensure_alpn(maps:get(protocols, Opts, [http2, http]), maps:get(transport_opts, Opts, []))]),
+  case ProxyHandle:connect(Host, Port, TransportOpts, maps:get(connect_timeout, Opts, 30000)) of
+    {ok, SocketT} ->
+      Socket = normalize_socket(SocketT),
       {Protocol, ProtoOptsKey} = case ssl:negotiated_protocol(Socket) of
                                    {ok, <<"h2">>} -> {gun_http2, http2_opts};
                                    _ -> {gun_http, http_opts}
                                  end,
-      up(State, Socket, Protocol, ProtoOptsKey);
+      case gun_stats:connection_active(self()) of
+        true ->
+          up(State, SocketT, Protocol, ProtoOptsKey);
+        false ->
+          ProxyHandle:close(SocketT),
+          exit_or_error(exit, normal)
+      end;
     {error, Reason} ->
-      retry(State#state{last_error = Reason}, Retries)
+      case gun_stats:connection_active(self()) of
+        true ->
+          retry(State#state{last_error = Reason}, Retries);
+        false ->
+          exit_or_error(exit, normal)
+      end
   end;
-transport_connect(State = #state{host = Host, port = Port, opts = Opts, transport = Transport}, Retries) ->
-  TransportOpts = [binary, {active, false}
-    | maps:get(transport_opts, Opts, [])],
-  case Transport:connect(Host, Port, TransportOpts, maps:get(connect_timeout, Opts, infinity)) of
+transport_connect(State = #state{host = Host, port = Port, opts = Opts, proxy_handle = ProxyHandle, proxy_opt = ProxyOpts}, Retries) ->
+  TransportOpts = format_proxy_opts(ProxyHandle, ProxyOpts,
+    ensure_gun_tcp_opt([binary, {active, false} | maps:get(transport_opts, Opts, [])])),
+  case ProxyHandle:connect(Host, Port, TransportOpts, maps:get(connect_timeout, Opts, 30000)) of
     {ok, Socket} ->
       {Protocol, ProtoOptsKey} = case maps:get(protocols, Opts, [http]) of
                                    [http] -> {gun_http, http_opts};
                                    [http2] -> {gun_http2, http2_opts}
                                  end,
-      up(State, Socket, Protocol, ProtoOptsKey);
+      case gun_stats:connection_active(self()) of
+        true ->
+          up(State, Socket, Protocol, ProtoOptsKey);
+        false ->
+          ProxyHandle:close(Socket),
+          exit_or_error(exit, normal)
+      end;
     {error, Reason} ->
-      retry(State#state{last_error = Reason}, Retries)
+      case gun_stats:connection_active(self()) of
+        true ->
+          retry(State#state{last_error = Reason}, Retries);
+        false ->
+          exit_or_error(exit, normal)
+      end
   end.
 
 ensure_alpn(Protocols0, TransportOpts) ->
@@ -744,20 +819,22 @@ ensure_alpn(Protocols0, TransportOpts) ->
     {client_preferred_next_protocols, {client, Protocols, <<"http/1.1">>}}
     | TransportOpts].
 
-up(State = #state{owner = Owner, opts = Opts, transport = Transport}, Socket, Protocol, ProtoOptsKey) ->
+up(State = #state{owner = Owner, opts = Opts, transport = Transport}, SocketT, Protocol, ProtoOptsKey) ->
   ProtoOpts = maps:get(ProtoOptsKey, Opts, #{}),
+  Socket = normalize_socket(SocketT),
   ProtoState = Protocol:init(Owner, Socket, Transport, ProtoOpts),
   Owner ! {gun_up, self(), Protocol:name()},
-  before_loop(State#state{socket = Socket, protocol = Protocol, protocol_state = ProtoState}).
+  NewOpts = maps:put(retry, 0, Opts),
+  before_loop(State#state{opts = NewOpts, socket = Socket, socket_t = SocketT, protocol = Protocol, protocol_state = ProtoState}).
 
 down(State = #state{owner = Owner, opts = Opts, protocol = Protocol, protocol_state = ProtoState}, Reason) ->
   {KilledStreams, UnprocessedStreams} = Protocol:down(ProtoState),
-  Owner ! {gun_down, self(), Protocol:name(), Reason, KilledStreams, UnprocessedStreams},
+  send_owner(Owner, {gun_down, self(), Protocol:name(), Reason, KilledStreams, UnprocessedStreams}),
   retry(State#state{socket = undefined, protocol = undefined, protocol_state = undefined,
-    last_error = Reason}, maps:get(retry, Opts, 5)).
+    last_error = Reason}, maps:get(retry, Opts, 0)).
 
 retry(#state{last_error = Reason}, 0) ->
-  exit({shutdown, Reason});
+  exit_or_error(exit, {shutdown, Reason});
 retry(State = #state{keepalive_ref = KeepaliveRef}, Retries) when is_reference(KeepaliveRef) ->
   _ = erlang:cancel_timer(KeepaliveRef),
   %% Flush if we have a keepalive message
@@ -796,10 +873,17 @@ before_loop(State = #state{opts = Opts, protocol = Protocol}) ->
 
 loop(State = #state{parent = Parent, owner = Owner, owner_ref = OwnerRef,
   origin_host = Host, origin_port = Port, opts = Opts, socket = Socket,
-  transport = Transport, protocol = Protocol, protocol_state = ProtoState}) ->
+  transport = Transport, protocol = Protocol, protocol_state = ProtoState,
+  socket_t = SocketT, proxy_handle = ProxyHandle}) ->
   {OK, Closed, Error} = Transport:messages(),
-  Transport:setopts(Socket, [{active, once}]),
+  ProxyHandle:setopts(SocketT, [{active, once}]),
   receive
+    %% handle shutdown asap
+    {shutdown, Owner} ->
+      Protocol:close(ProtoState),
+      ProxyHandle:close(SocketT),
+      exit_or_error(return, ok);
+    %% handle socket data
     {OK, Socket, Data} ->
       case Protocol:handle(Data, ProtoState) of
         Commands when is_list(Commands) ->
@@ -809,11 +893,11 @@ loop(State = #state{parent = Parent, owner = Owner, owner_ref = OwnerRef,
       end;
     {Closed, Socket} ->
       Protocol:close(ProtoState),
-      Transport:close(Socket),
+      ProxyHandle:close(SocketT),
       down(State, closed);
     {Error, Socket, Reason} ->
       Protocol:close(ProtoState),
-      Transport:close(Socket),
+      ProxyHandle:close(SocketT),
       down(State, {error, Reason});
     {OK, _PreviousSocket, _Data} ->
       loop(State);
@@ -825,15 +909,21 @@ loop(State = #state{parent = Parent, owner = Owner, owner_ref = OwnerRef,
       ProtoState2 = Protocol:keepalive(ProtoState),
       before_loop(State#state{protocol_state = ProtoState2});
     {request, ReplyTo, StreamRef, Method, Path, Headers, <<>>} ->
+      % PATCH BEGIN
+      {Path1, Headers1} = format_path_headers(ProxyHandle, Host, Port, Path, Headers, Opts),
+      % PATCH END
       ProtoState2 = Protocol:request(ProtoState,
-        StreamRef, ReplyTo, Method, Host, Port, Path, Headers),
+        StreamRef, ReplyTo, Method, Host, Port, Path1, Headers1),
       loop(State#state{protocol_state = ProtoState2});
     {request, ReplyTo, StreamRef, Method, Path, Headers, Body} ->
+      % PATCH BEGIN
+      {Path1, Headers1} = format_path_headers(ProxyHandle, Host, Port, Path, Headers, Opts),
+      % PATCH END
       ProtoState2 = Protocol:request(ProtoState,
-        StreamRef, ReplyTo, Method, Host, Port, Path, Headers, Body),
+        StreamRef, ReplyTo, Method, Host, Port, Path1, Headers1, Body),
       loop(State#state{protocol_state = ProtoState2});
-%% @todo Do we want to reject ReplyTo if it's not the process
-%% who initiated the connection? For both data and cancel.
+    %% @todo Do we want to reject ReplyTo if it's not the process
+    %% who initiated the connection? For both data and cancel.
     {data, ReplyTo, StreamRef, IsFin, Data} ->
       ProtoState2 = Protocol:data(ProtoState,
         StreamRef, ReplyTo, IsFin, Data),
@@ -862,8 +952,8 @@ loop(State = #state{parent = Parent, owner = Owner, owner_ref = OwnerRef,
     {cancel, ReplyTo, StreamRef} ->
       ProtoState2 = Protocol:cancel(ProtoState, StreamRef, ReplyTo),
       loop(State#state{protocol_state = ProtoState2});
-%% @todo Maybe make an interface in the protocol module instead of checking on protocol name.
-%% An interface would also make sure that HTTP/1.0 can't upgrade.
+    %% @todo Maybe make an interface in the protocol module instead of checking on protocol name.
+    %% An interface would also make sure that HTTP/1.0 can't upgrade.
     {ws_upgrade, Owner, StreamRef, Path, Headers} when Protocol =:= gun_http ->
       WsOpts = maps:get(ws_opts, Opts, #{}),
       ProtoState2 = Protocol:ws_upgrade(ProtoState, StreamRef, Host, Port, Path, Headers, WsOpts),
@@ -871,35 +961,25 @@ loop(State = #state{parent = Parent, owner = Owner, owner_ref = OwnerRef,
     {ws_upgrade, Owner, StreamRef, Path, Headers, WsOpts} when Protocol =:= gun_http ->
       ProtoState2 = Protocol:ws_upgrade(ProtoState, StreamRef, Host, Port, Path, Headers, WsOpts),
       loop(State#state{protocol_state = ProtoState2});
-  %% @todo can fail if http/1.0
-    {shutdown, Owner} ->
-      %% @todo Protocol:shutdown?
-      ok;
     {'DOWN', OwnerRef, process, Owner, Reason} ->
       Protocol:close(ProtoState),
-      Transport:close(Socket),
+      ProxyHandle:close(SocketT),
       owner_gone(Reason);
     {system, From, Request} ->
-      sys:handle_system_msg(Request, From, Parent, ?MODULE, [],
-        {loop, State});
+      sys:handle_system_msg(Request, From, Parent, ?MODULE, [], {loop, State});
     {ws_upgrade, _, StreamRef, _, _} ->
-      Owner ! {gun_error, self(), StreamRef, {badstate,
-        "Websocket is only supported over HTTP/1.1."}},
+      Owner ! {gun_error, self(), StreamRef, {badstate, "Websocket is only supported over HTTP/1.1."}},
       loop(State);
     {ws_upgrade, _, StreamRef, _, _, _} ->
-      Owner ! {gun_error, self(), StreamRef, {badstate,
-        "Websocket is only supported over HTTP/1.1."}},
+      Owner ! {gun_error, self(), StreamRef, {badstate, "Websocket is only supported over HTTP/1.1."}},
       loop(State);
     {ws_send, _, _} ->
-      Owner ! {gun_error, self(), {badstate,
-        "Connection needs to be upgraded to Websocket "
-        "before the gun:ws_send/1 function can be used."}},
+      Owner ! {gun_error, self(), {badstate, "Connection needs to be upgraded to Websocket before the gun:ws_send/1 function can be used."}},
       loop(State);
-%% @todo The ReplyTo patch disabled the notowner behavior.
-%% We need to add an option to enforce this behavior if needed.
+    %% @todo The ReplyTo patch disabled the notowner behavior.
+    %% We need to add an option to enforce this behavior if needed.
     Any when is_tuple(Any), is_pid(element(2, Any)) ->
-      element(2, Any) ! {gun_error, self(), {notowner,
-        "Operations are restricted to the owner of the connection."}},
+      element(2, Any) ! {gun_error, self(), {notowner, "Operations are restricted to the owner of the connection."}},
       loop(State);
     Any ->
       error_logger:error_msg("Unexpected message: ~w~n", [Any]),
@@ -908,11 +988,11 @@ loop(State = #state{parent = Parent, owner = Owner, owner_ref = OwnerRef,
 
 commands([], State) ->
   loop(State);
-commands([close | _], State = #state{socket = Socket, transport = Transport}) ->
-  Transport:close(Socket),
+commands([close | _], State = #state{socket_t = SocketT, proxy_handle = ProxyHandle}) ->
+  ProxyHandle:close(SocketT),
   down(State, normal);
-commands([Error = {error, _} | _], State = #state{socket = Socket, transport = Transport}) ->
-  Transport:close(Socket),
+commands([Error = {error, _} | _], State = #state{socket_t = SocketT, proxy_handle = ProxyHandle}) ->
+  ProxyHandle:close(SocketT),
   down(State, Error);
 commands([{state, ProtoState} | Tail], State) ->
   commands(Tail, State#state{protocol_state = ProtoState});
@@ -947,23 +1027,30 @@ commands([{switch_protocol, Protocol, _ProtoState0} | Tail],
   commands(Tail, State#state{protocol = Protocol, protocol_state = ProtoState}).
 
 ws_loop(State = #state{parent = Parent, owner = Owner, owner_ref = OwnerRef, socket = Socket,
-  transport = Transport, protocol = Protocol, protocol_state = ProtoState}) ->
+  transport = Transport, protocol = Protocol, protocol_state = ProtoState,
+  socket_t = SocketT, proxy_handle = ProxyHandle}) ->
   {OK, Closed, Error} = Transport:messages(),
   Transport:setopts(Socket, [{active, once}]),
   receive
+    % handle shutdown
+    {shutdown, Owner} ->
+      Protocol:close(ProtoState),
+      ProxyHandle:close(SocketT),
+      exit_or_error(return, ok);
+    % handle socket data
     {OK, Socket, Data} ->
       case Protocol:handle(Data, ProtoState) of
         close ->
-          Transport:close(Socket),
+          ProxyHandle:close(SocketT),
           down(State, normal);
         ProtoState2 ->
           ws_loop(State#state{protocol_state = ProtoState2})
       end;
     {Closed, Socket} ->
-      Transport:close(Socket),
+      ProxyHandle:close(SocketT),
       down(State, closed);
     {Error, Socket, Reason} ->
-      Transport:close(Socket),
+      ProxyHandle:close(SocketT),
       down(State, {error, Reason});
   %% Ignore any previous HTTP keep-alive.
     keepalive ->
@@ -973,34 +1060,34 @@ ws_loop(State = #state{parent = Parent, owner = Owner, owner_ref = OwnerRef, soc
     {ws_send, Owner, Frame} ->
       case Protocol:send(Frame, ProtoState) of
         close ->
-          Transport:close(Socket),
+          ProxyHandle:close(SocketT),
           down(State, normal);
         ProtoState2 ->
           ws_loop(State#state{protocol_state = ProtoState2})
       end;
-    {shutdown, Owner} ->
-      %% @todo Protocol:shutdown? %% @todo close frame
-      ok;
     {'DOWN', OwnerRef, process, Owner, Reason} ->
       Protocol:close(owner_gone, ProtoState),
-      Transport:close(Socket),
+      ProxyHandle:close(SocketT),
       owner_gone(Reason);
     {system, From, Request} ->
-      sys:handle_system_msg(Request, From, Parent, ?MODULE, [],
-        {ws_loop, State});
+      sys:handle_system_msg(Request, From, Parent, ?MODULE, [], {ws_loop, State});
     Any when is_tuple(Any), is_pid(element(2, Any)) ->
-      element(2, Any) ! {gun_error, self(), {notowner,
-        "Operations are restricted to the owner of the connection."}},
+      element(2, Any) ! {gun_error, self(), {notowner, "Operations are restricted to the owner of the connection."}},
       ws_loop(State);
     Any ->
-      error_logger:error_msg("Unexpected message: ~w~n", [Any])
+      error_logger:error_msg("Unexpected message: ~w~n", [Any]),
+      exit_or_error(exit, badarg)
   end.
 
 -spec owner_gone(_) -> no_return().
-owner_gone(normal) -> exit(normal);
-owner_gone(shutdown) -> exit(shutdown);
-owner_gone(Shutdown = {shutdown, _}) -> exit(Shutdown);
-owner_gone(Reason) -> error({owner_gone, Reason}).
+owner_gone(normal) ->
+  exit_or_error(exit, normal);
+owner_gone(shutdown) ->
+  exit_or_error(exit, shutdown);
+owner_gone(Shutdown = {shutdown, _}) ->
+  exit_or_error(exit, Shutdown);
+owner_gone(Reason) ->
+  exit_or_error(error, {owner_gone, Reason}).
 
 system_continue(_, _, {retry_loop, State, Retry}) ->
   retry_loop(State, Retry);
@@ -1011,7 +1098,104 @@ system_continue(_, _, {ws_loop, State}) ->
 
 -spec system_terminate(any(), _, _, _) -> no_return().
 system_terminate(Reason, _, _, _) ->
-  exit(Reason).
+  exit_or_error(exit, Reason).
 
 system_code_change(Misc, _, _, _) ->
   {ok, Misc}.
+
+
+%% PATCH BEGIN
+
+send_owner(Owner, Msg) ->
+  case gun_stats:connection_active(self()) of
+    true ->
+      Owner ! Msg,
+      ok;
+    false ->
+      ok
+  end.
+
+exit_or_error(exit, Reason) ->
+  gun_stats:update_counter(active_connection, -1),
+  gun_stats:del_connection(self()),
+  exit(Reason);
+exit_or_error(error, Reason) ->
+  gun_stats:update_counter(active_connection, -1),
+  gun_stats:del_connection(self()),
+  error(Reason);
+exit_or_error(return, Result) ->
+  gun_stats:update_counter(active_connection, -1),
+  gun_stats:del_connection(self()),
+  Result.
+
+select_http_proxy(gun_tcp, _PO, ProxyHost, ProxyPort) -> {gun_tcp, [binary, {active, false}], ProxyHost, ProxyPort};
+select_http_proxy(_, PO, ProxyHost, ProxyPort) -> {gun_http_proxy, PO, ProxyHost, ProxyPort}.
+
+format_path_headers(gun_tcp, OriginHost, OriginPort, Path, Headers, Opts) ->
+	IsProxy = is_http_proxy(Opts),
+	case maps:get(proxy_auth, Opts, undefined) of
+		{U, P} when IsProxy == true ->
+			{add_host_to_path(OriginHost, OriginPort, Path), add_proxy_authorization(U, P, Headers)};
+		_ ->
+			{Path, Headers}
+	end;
+
+format_path_headers(_, _OriginHost, _OriginPort, Path, Headers, _Opts) ->
+	{Path, Headers}.
+
+add_host_to_path(OriginHost, OriginPort, Path) ->
+	case OriginPort of
+		80 ->
+			iolist_to_binary([<<"http://">>, OriginHost, Path]);
+		_ ->
+			iolist_to_binary([<<"http://">>, OriginHost, <<":">>, integer_to_binary(OriginPort), Path])
+	end.
+
+add_proxy_authorization(ProxyUser, ProxyPass, Headers) ->
+	HasProxyAuthorization = lists:keymember(<<"proxy-authorization">>, 1, Headers),
+	case HasProxyAuthorization of
+		false ->
+			Credentials = base64:encode(<<ProxyUser/binary, ":", ProxyPass/binary>>),
+			[{<<"proxy-authorization">>, [<<"Basic ">>, Credentials]} | Headers];
+		true ->
+			Headers
+	end.
+
+is_http_proxy(Opts) ->
+	case maps:get(proxy, Opts, undefined) of
+		Url when is_binary(Url) orelse is_list(Url) ->
+			true;
+		{_ProxyHost, _ProxyPort} ->
+			true;
+		{connect, _ProxyHost, _ProxyPort} ->
+			true;
+		_ ->
+			false
+	end.
+
+format_proxy_opts(ProxyHandle, ProxyOpts, TransOpts) ->
+  case ProxyHandle of
+    gun_http_proxy ->
+      [{tcp_opt, TransOpts}| ProxyOpts];
+    gun_socks5_proxy ->
+      [{tcp_opt, TransOpts}| ProxyOpts];
+    gun_tcp ->
+      TransOpts;
+    gun_tls ->
+      TransOpts
+  end.
+
+ensure_gun_tcp_opt(TransOpts0) ->
+	SslOpts = [verify, verify_fun, fail_if_no_peer_cert, depth, cert, certfile, key, keyfile, password, cacerts,
+    cacertfile, dh, dhfile, ciphers, user_lookup_fun, reuse_sessions, reuse_session, next_protocols_advertised,
+		client_preferred_next_protocols, alpn_advertised_protocols, log_alert, server_name_indication, customize_hostname_check,
+		sni_hosts, sni_fun, protocol, handshake, secure_renegotiate, crl_check, crl_cache, partial_chain, versions],
+	lists:filter(fun(X) ->
+			case X of
+				{K, _} ->
+					lists:member(K, SslOpts) == false;
+				K ->
+					lists:member(K, SslOpts) == false
+			end
+		end, TransOpts0).
+%% PATCH END

@@ -1,15 +1,6 @@
-%%%-------------------------------------------------------------------
-%%% @author MrR
-%%% @copyright (C) 2018, GSKYNET
-%%% @doc
-%%%
-%%% @end
-%%% Created : 31. Oct 2018 4:01 PM
-%%%-------------------------------------------------------------------
 -module(gun_http_proxy).
 
 -export([
-  messages/1,
   connect/3,
   connect/4,
   recv/2,
@@ -26,23 +17,8 @@
 -type http_socket() :: {atom(), inet:socket()}.
 -export_type([http_socket/0]).
 
--ifdef(no_proxy_sni_support).
-
-ssl_opts(Host, Opts) ->
-  gun_util:ssl_opts(Host, Opts).
-
--else.
-
 ssl_opts(Host, Opts) ->
   [{server_name_indication, Host} | gun_util:ssl_opts(Host,Opts)].
-
--endif.
-
-%% @doc Atoms used to identify messages in {active, once | true} mode.
-messages({gun_ssl, _}) ->
-  {ssl, ssl_closed, ssl_error};
-messages({_, _}) ->
-  {tcp, tcp_closed, tcp_error}.
 
 
 connect(ProxyHost, ProxyPort, Opts) ->
@@ -51,7 +27,6 @@ connect(ProxyHost, ProxyPort, Opts) ->
 connect(ProxyHost, ProxyPort, Opts, Timeout)
   when is_list(ProxyHost), is_integer(ProxyPort),
        (Timeout =:= infinity orelse is_integer(Timeout)) ->
-
   %% get the  host and port to connect from the options
   Host = proplists:get_value(connect_host, Opts),
   Port = proplists:get_value(connect_port, Opts),
@@ -60,7 +35,8 @@ connect(ProxyHost, ProxyPort, Opts, Timeout)
   %% filter connection options
   AcceptedOpts =  [linger, nodelay, send_timeout, send_timeout_close, raw, inet6, ip],
   BaseOpts = [binary, {active, false}, {packet, 0}, {keepalive,  true}, {nodelay, true}],
-  ConnectOpts = gun_util:filter_options(Opts, AcceptedOpts, BaseOpts),
+  TransOpts= proplists:get_value(tcp_opt, Opts, []),
+  ConnectOpts = gun_util:filter_options(TransOpts, AcceptedOpts, BaseOpts),
 
   %% connnect to the proxy, and upgrade the socket if needed.
   case gen_tcp:connect(ProxyHost, ProxyPort, ConnectOpts, Timeout) of
@@ -158,7 +134,7 @@ do_handshake(Socket, Host, Port, Options, Timeout) ->
     80 ->
       list_to_binary(Host);
     _ ->
-      iolist_to_binary([Host, ":", integer_to_list(Port)])
+      iolist_to_binary([Host, ":", integer_to_list(ProxyPort)])
   end,
   UA =  <<"gun/1.3.2">>,
   Headers0 = [<<"Host: ", HostHdr/binary>>, <<"User-Agent: ", UA/binary >>],

@@ -15,7 +15,7 @@ defmodule Gun.MixProject do
   def application do
     [
       mod: {Gun, []},
-      extra_applications: [:logger, :cowlib, :idna, :certifi, :ssl_verify_fun, :gen_statem2]
+      extra_applications: [:logger, :cowlib, :idna, :certifi, :ssl_verify_fun]
     ]
   end
 
