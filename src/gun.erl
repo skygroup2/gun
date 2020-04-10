@@ -13,7 +13,6 @@
 %% OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 -module(gun).
--behavior(gen_statem2).
 
 -ifdef(OTP_RELEASE).
 -compile({nowarn_deprecated_function, [{erlang, get_stacktrace, 0}]}).
@@ -49,10 +48,7 @@
 -export([put/3]).
 -export([put/4]).
 -export([put/5]).
-
-%% Generic requests interface.
--export([headers/4]).
--export([headers/5]).
+-export([request/4]).
 -export([request/5]).
 -export([request/6]).
 
@@ -78,9 +74,8 @@
 %% Flushing gun messages.
 -export([flush/1]).
 
-%% Streams.
+%% Cancelling a stream.
 -export([cancel/2]).
--export([stream_info/2]).
 
 %% Websocket.
 -export([ws_upgrade/2]).
@@ -90,54 +85,52 @@
 
 %% Internals.
 -export([start_link/4]).
--export([callback_mode/0]).
--export([init/1]).
--export([not_connected/3]).
--export([connected/3]).
+-export([proc_lib_hack/5]).
+-export([system_continue/3]).
+-export([system_terminate/4]).
+-export([system_code_change/4]).
 
--type req_headers() :: [{binary() | string() | atom(), iodata()}]
-	| #{binary() | string() | atom() => iodata()}.
--export_type([req_headers/0]).
+-type headers() :: [{binary(), iodata()}].
 
 -type ws_close_code() :: 1000..4999.
 -type ws_frame() :: close | ping | pong
-	| {text | binary | close | ping | pong, iodata()}
-	| {close, ws_close_code(), iodata()}.
+| {text | binary | close | ping | pong, iodata()}
+| {close, ws_close_code(), iodata()}.
 
 -type opts() :: #{
-	connect_timeout => timeout(),
-	http_opts       => http_opts(),
-	http2_opts      => http2_opts(),
-	protocols       => [http | http2],
-	retry           => non_neg_integer(),
-	retry_timeout   => pos_integer(),
-	trace           => boolean(),
-	transport       => tcp | tls | ssl,
-	transport_opts  => [gen_tcp:connect_option()] | [ssl:connect_option()],
-	ws_opts         => ws_opts()
+connect_timeout => timeout(),
+http_opts => http_opts(),
+http2_opts => http2_opts(),
+protocols => [http | http2],
+retry => non_neg_integer(),
+retry_timeout => pos_integer(),
+trace => boolean(),
+transport => tcp | tls | ssl,
+transport_opts => [gen_tcp:connect_option()] | [ssl:connect_option()],
+ws_opts => ws_opts()
 }.
 -export_type([opts/0]).
 %% @todo Add an option to disable/enable the notowner behavior.
 
 -type connect_destination() :: #{
-	host := inet:hostname() | inet:ip_address(),
-	port := inet:port_number(),
-	username => iodata(),
-	password => iodata(),
-	protocol => http | http2, %% @todo Remove in Gun 2.0.
-	protocols => [http | http2],
-	transport => tcp | tls,
-	tls_opts => [ssl:connect_option()],
-	tls_handshake_timeout => timeout()
+host := inet:hostname() | inet:ip_address(),
+port := inet:port_number(),
+username => iodata(),
+password => iodata(),
+protocol => http | http2, %% @todo Remove in Gun 2.0.
+protocols => [http | http2],
+transport => tcp | tls,
+tls_opts => [ssl:connect_option()],
+tls_handshake_timeout => timeout()
 }.
 -export_type([connect_destination/0]).
 
 -type intermediary() :: #{
-	type := connect,
-	host := inet:hostname() | inet:ip_address(),
-	port := inet:port_number(),
-	transport := tcp | tls,
-	protocol := http | http2
+type := connect,
+host := inet:hostname() | inet:ip_address(),
+port := inet:port_number(),
+transport := tcp | tls,
+protocol := http | http2
 }.
 
 %% @todo When/if HTTP/2 CONNECT gets implemented, we will want an option here
@@ -145,549 +138,511 @@
 %% This is of course not required for HTTP/1.1 since the CONNECT takes over
 %% the entire connection.
 -type req_opts() :: #{
-	reply_to => pid()
+reply_to => pid()
 }.
 -export_type([req_opts/0]).
 
 -type http_opts() :: #{
-	keepalive             => timeout(),
-	transform_header_name => fun((binary()) -> binary()),
-	version               => 'HTTP/1.1' | 'HTTP/1.0'
+keepalive => timeout(),
+transform_header_name => fun((binary()) -> binary()),
+version => 'HTTP/1.1' | 'HTTP/1.0'
 }.
 -export_type([http_opts/0]).
 
 -type http2_opts() :: #{
-	keepalive => timeout()
+keepalive => timeout()
 }.
 -export_type([http2_opts/0]).
 
 %% @todo keepalive
 -type ws_opts() :: #{
-	compress => boolean(),
-	protocols => [{binary(), module()}]
+compress => boolean(),
+protocols => [{binary(), module()}]
 }.
 -export_type([ws_opts/0]).
 
 -record(state, {
-	owner :: pid(),
-	owner_ref :: reference(),
-	host :: inet:hostname() | inet:ip_address(),
-	port :: inet:port_number(),
-	origin_host :: inet:hostname() | inet:ip_address(),
-	origin_port :: inet:port_number(),
-	intermediaries = [] :: [intermediary()],
-	opts :: opts(),
-	keepalive_ref :: undefined | reference(),
-	socket :: undefined | inet:socket() | ssl:sslsocket(),
+  parent :: pid(),
+  owner :: pid(),
+  owner_ref :: reference(),
+  host :: inet:hostname() | inet:ip_address(),
+  port :: inet:port_number(),
+  origin_host :: inet:hostname() | inet:ip_address(),
+  origin_port :: inet:port_number(),
+  intermediaries = [] :: [intermediary()],
+  opts :: opts(),
+  keepalive_ref :: undefined | reference(),
+  socket :: undefined | inet:socket() | ssl:sslsocket(),
+  transport :: module(),
+  % PATCH BEGIN
   socket_t :: tuple(),
-	transport :: module(),
-	proxy_handle :: module(),
+  proxy_handle :: module(),
   proxy_opt = [],
-	messages :: {atom(), atom(), atom()},
-	protocol :: module(),
-	protocol_state :: any()
+  % PATCH END
+  protocol :: module(),
+  protocol_state :: any(),
+  last_error :: any()
 }).
 
 %% Connection.
 
 -spec open(inet:hostname() | inet:ip_address(), inet:port_number())
-	-> {ok, pid()} | {error, any()}.
+      -> {ok, pid()} | {error, any()}.
 open(Host, Port) ->
-	open(Host, Port, #{}).
+  open(Host, Port, #{}).
 
 -spec open(inet:hostname() | inet:ip_address(), inet:port_number(), opts())
-	-> {ok, pid()} | {error, any()}.
+      -> {ok, pid()} | {error, any()}.
 open(Host, Port, Opts) when is_binary(Host) ->
-	do_open(binary_to_list(Host), Port, Opts);
+  do_open(binary_to_list(Host), Port, Opts);
 open(Host, Port, Opts) when is_list(Host); is_atom(Host); is_tuple(Host) ->
-	do_open(Host, Port, Opts).
+  do_open(Host, Port, Opts).
 
--spec open_unix(Path::string(), opts())
-	-> {ok, pid()} | {error, any()}.
+-spec open_unix(Path :: string(), opts())
+      -> {ok, pid()} | {error, any()}.
 open_unix(SocketPath, Opts) ->
-	do_open({local, SocketPath}, 0, Opts).
+  do_open({local, SocketPath}, 0, Opts).
 
 do_open(Host, Port, Opts0) ->
-	%% We accept both ssl and tls but only use tls in the code.
-	Opts = case Opts0 of
-		#{transport := ssl} -> Opts0#{transport => tls};
-		_ -> Opts0
-	end,
-	case check_options(maps:to_list(Opts)) of
-		ok ->
-			case supervisor:start_child(gun_sup, [self(), Host, Port, Opts]) of
-				OK = {ok, ServerPid} ->
-					consider_tracing(ServerPid, Opts),
-					OK;
-				StartError ->
-					StartError
-			end;
-		CheckError ->
-			CheckError
-	end.
+  %% We accept both ssl and tls but only use tls in the code.
+  Opts = case Opts0 of
+           #{transport := ssl} -> Opts0#{transport => tls};
+           _ -> Opts0
+         end,
+  case check_options(maps:to_list(Opts)) of
+    ok ->
+      case supervisor:start_child(gun_sup, [self(), Host, Port, Opts]) of
+        OK = {ok, ServerPid} ->
+          consider_tracing(ServerPid, Opts),
+          OK;
+        StartError ->
+          StartError
+      end;
+    CheckError ->
+      CheckError
+  end.
 
 check_options([]) ->
-	ok;
-check_options([{proxy, Proxy}|Opts]) when is_list(Proxy) orelse is_binary(Proxy) orelse is_tuple(Proxy) ->
-	check_options(Opts);
-check_options([{proxy_auth, ProxyAuth}|Opts]) when is_tuple(ProxyAuth) orelse ProxyAuth == nil ->
-	check_options(Opts);
-check_options([{remote_proxy, Proxy}|Opts]) when is_list(Proxy) orelse is_map(Proxy) ->
-	check_options(Opts);
-check_options([{socks5_resolve, Resolve}| Opts]) when is_atom(Resolve) ->
-	check_options(Opts);
-check_options([{recv_timeout, T}|Opts]) when is_integer(T), T >= 0 ->
-	check_options(Opts);
-check_options([{insecure, Insecure}| Opts]) when is_boolean(Insecure) ->
-	check_options(Opts);
-check_options([{connect_timeout, infinity}|Opts]) ->
-	check_options(Opts);
-check_options([{connect_timeout, T}|Opts]) when is_integer(T), T >= 0 ->
-	check_options(Opts);
-check_options([{http_opts, ProtoOpts}|Opts]) when is_map(ProtoOpts) ->
-	case gun_http:check_options(ProtoOpts) of
-		ok ->
-			check_options(Opts);
-		Error ->
-			Error
-	end;
-check_options([{http2_opts, ProtoOpts}|Opts]) when is_map(ProtoOpts) ->
-	case gun_http2:check_options(ProtoOpts) of
-		ok ->
-			check_options(Opts);
-		Error ->
-			Error
-	end;
-check_options([Opt = {protocols, L}|Opts]) when is_list(L) ->
-	Len = length(L),
-	case length(lists:usort(L)) of
-		Len when Len > 0 ->
-			Check = lists:usort([(P =:= http) orelse (P =:= http2) || P <- L]),
-			case Check of
-				[true] ->
-					check_options(Opts);
-				_ ->
-					{error, {options, Opt}}
-			end;
-		_ ->
-			{error, {options, Opt}}
-	end;
-check_options([{retry, R}|Opts]) when is_integer(R), R >= 0 ->
-	check_options(Opts);
-check_options([{retry_timeout, T}|Opts]) when is_integer(T), T >= 0 ->
-	check_options(Opts);
-check_options([{trace, B}|Opts]) when B =:= true; B =:= false ->
-	check_options(Opts);
-check_options([{transport, T}|Opts]) when T =:= tcp; T =:= tls ->
-	check_options(Opts);
-check_options([{transport_opts, L}|Opts]) when is_list(L) ->
-	check_options(Opts);
-check_options([{ws_opts, ProtoOpts}|Opts]) when is_map(ProtoOpts) ->
-	case gun_ws:check_options(ProtoOpts) of
-		ok ->
-			check_options(Opts);
-		Error ->
-			Error
-	end;
-check_options([Opt|_]) ->
-	{error, {options, Opt}}.
+  ok;
+check_options([{proxy, Proxy} | Opts]) when is_list(Proxy) orelse is_binary(Proxy) orelse is_tuple(Proxy) ->
+  check_options(Opts);
+check_options([{proxy_auth, ProxyAuth} | Opts]) when is_tuple(ProxyAuth) orelse ProxyAuth == nil ->
+  check_options(Opts);
+check_options([{socks5_resolve, Resolve} | Opts]) when is_atom(Resolve) ->
+  check_options(Opts);
+check_options([{recv_timeout, T} | Opts]) when is_integer(T), T >= 0 ->
+  check_options(Opts);
+check_options([{insecure, Insecure} | Opts]) when is_boolean(Insecure) ->
+  check_options(Opts);
+check_options([{connect_timeout, infinity} | Opts]) ->
+  check_options(Opts);
+check_options([{connect_timeout, T} | Opts]) when is_integer(T), T >= 0 ->
+  check_options(Opts);
+check_options([{http_opts, ProtoOpts} | Opts]) when is_map(ProtoOpts) ->
+  case gun_http:check_options(ProtoOpts) of
+    ok ->
+      check_options(Opts);
+    Error ->
+      Error
+  end;
+check_options([{http2_opts, ProtoOpts} | Opts]) when is_map(ProtoOpts) ->
+  case gun_http2:check_options(ProtoOpts) of
+    ok ->
+      check_options(Opts);
+    Error ->
+      Error
+  end;
+check_options([Opt = {protocols, L} | Opts]) when is_list(L) ->
+  Len = length(L),
+  case length(lists:usort(L)) of
+    Len when Len > 0 ->
+      Check = lists:usort([(P =:= http) orelse (P =:= http2) || P <- L]),
+      case Check of
+        [true] ->
+          check_options(Opts);
+        _ ->
+          {error, {options, Opt}}
+      end;
+    _ ->
+      {error, {options, Opt}}
+  end;
+check_options([{retry, R} | Opts]) when is_integer(R), R >= 0 ->
+  check_options(Opts);
+check_options([{retry_timeout, T} | Opts]) when is_integer(T), T >= 0 ->
+  check_options(Opts);
+check_options([{trace, B} | Opts]) when B =:= true; B =:= false ->
+  check_options(Opts);
+check_options([{transport, T} | Opts]) when T =:= tcp; T =:= tls ->
+  check_options(Opts);
+check_options([{transport_opts, L} | Opts]) when is_list(L) ->
+  check_options(Opts);
+check_options([{ws_opts, ProtoOpts} | Opts]) when is_map(ProtoOpts) ->
+  case gun_ws:check_options(ProtoOpts) of
+    ok ->
+      check_options(Opts);
+    Error ->
+      Error
+  end;
+check_options([Opt | _]) ->
+  {error, {options, Opt}}.
 
 normalize_socket({_Transport, Socket}) -> Socket;
 normalize_socket(Socket) -> Socket.
 
 consider_tracing(ServerPid, #{trace := true}) ->
-	dbg:start(),
-	dbg:tracer(),
-	dbg:tpl(gun, [{'_', [], [{return_trace}]}]),
-	dbg:tpl(gun_http, [{'_', [], [{return_trace}]}]),
-	dbg:tpl(gun_http2, [{'_', [], [{return_trace}]}]),
-	dbg:tpl(gun_ws, [{'_', [], [{return_trace}]}]),
-	dbg:p(ServerPid, all);
+  dbg:start(),
+  dbg:tracer(),
+  dbg:tpl(gun, [{'_', [], [{return_trace}]}]),
+  dbg:tpl(gun_http, [{'_', [], [{return_trace}]}]),
+  dbg:tpl(gun_http2, [{'_', [], [{return_trace}]}]),
+  dbg:tpl(gun_ws, [{'_', [], [{return_trace}]}]),
+  dbg:p(ServerPid, all);
 consider_tracing(_, _) ->
-	ok.
+  ok.
 
 -spec info(pid()) -> map().
 info(ServerPid) ->
-	{_, #state{
-		socket=Socket,
-		proxy_handle = ProxyHandle,
-		protocol=Protocol,
-		origin_host=OriginHost,
-		origin_port=OriginPort,
-		intermediaries=Intermediaries
-	}} = sys:get_state(ServerPid),
-	{ok, {SockIP, SockPort}} = ProxyHandle:sockname(Socket),
-	#{
-		socket => Socket,
-		transport => ProxyHandle:name(),
-		protocol => Protocol:name(),
-		sock_ip => SockIP,
-		sock_port => SockPort,
-		origin_host => OriginHost,
-		origin_port => OriginPort,
-		%% Intermediaries are listed in the order data goes through them.
-		intermediaries => lists:reverse(Intermediaries)
-	}.
+  {_, #state{
+    socket = Socket,
+    proxy_handle = ProxyHandle,
+    protocol = Protocol,
+    origin_host = OriginHost,
+    origin_port = OriginPort,
+    intermediaries = Intermediaries
+  }} = sys:get_state(ServerPid),
+  {ok, {SockIP, SockPort}} = ProxyHandle:sockname(Socket),
+  #{
+    socket => Socket,
+    transport => ProxyHandle:name(),
+    protocol => Protocol:name(),
+    sock_ip => SockIP,
+    sock_port => SockPort,
+    origin_host => OriginHost,
+    origin_port => OriginPort,
+    %% Intermediaries are listed in the order data goes through them.
+    intermediaries => lists:reverse(Intermediaries)
+  }.
 
 -spec close(pid()) -> ok.
 close(ServerPid) ->
-	supervisor:terminate_child(gun_sup, ServerPid).
+  supervisor:terminate_child(gun_sup, ServerPid).
 
 -spec shutdown(pid()) -> ok.
 shutdown(ServerPid) ->
-	gen_statem2:cast(ServerPid, {shutdown, self()}).
+  ServerPid ! {shutdown, self()},
+  ok.
 
 %% Requests.
 
 -spec delete(pid(), iodata()) -> reference().
 delete(ServerPid, Path) ->
-	request(ServerPid, <<"DELETE">>, Path, [], <<>>).
+  request(ServerPid, <<"DELETE">>, Path, []).
 
--spec delete(pid(), iodata(), req_headers()) -> reference().
+-spec delete(pid(), iodata(), headers()) -> reference().
 delete(ServerPid, Path, Headers) ->
-	request(ServerPid, <<"DELETE">>, Path, Headers, <<>>).
+  request(ServerPid, <<"DELETE">>, Path, Headers).
 
--spec delete(pid(), iodata(), req_headers(), req_opts()) -> reference().
+-spec delete(pid(), iodata(), headers(), req_opts()) -> reference().
 delete(ServerPid, Path, Headers, ReqOpts) ->
-	request(ServerPid, <<"DELETE">>, Path, Headers, <<>>, ReqOpts).
+  request(ServerPid, <<"DELETE">>, Path, Headers, <<>>, ReqOpts).
 
 -spec get(pid(), iodata()) -> reference().
 get(ServerPid, Path) ->
-	request(ServerPid, <<"GET">>, Path, [], <<>>).
+  request(ServerPid, <<"GET">>, Path, []).
 
--spec get(pid(), iodata(), req_headers()) -> reference().
+-spec get(pid(), iodata(), headers()) -> reference().
 get(ServerPid, Path, Headers) ->
-	request(ServerPid, <<"GET">>, Path, Headers, <<>>).
+  request(ServerPid, <<"GET">>, Path, Headers).
 
--spec get(pid(), iodata(), req_headers(), req_opts()) -> reference().
+-spec get(pid(), iodata(), headers(), req_opts()) -> reference().
 get(ServerPid, Path, Headers, ReqOpts) ->
-	request(ServerPid, <<"GET">>, Path, Headers, <<>>, ReqOpts).
+  request(ServerPid, <<"GET">>, Path, Headers, <<>>, ReqOpts).
 
 -spec head(pid(), iodata()) -> reference().
 head(ServerPid, Path) ->
-	request(ServerPid, <<"HEAD">>, Path, [], <<>>).
+  request(ServerPid, <<"HEAD">>, Path, []).
 
--spec head(pid(), iodata(), req_headers()) -> reference().
+-spec head(pid(), iodata(), headers()) -> reference().
 head(ServerPid, Path, Headers) ->
-	request(ServerPid, <<"HEAD">>, Path, Headers, <<>>).
+  request(ServerPid, <<"HEAD">>, Path, Headers).
 
--spec head(pid(), iodata(), req_headers(), req_opts()) -> reference().
+-spec head(pid(), iodata(), headers(), req_opts()) -> reference().
 head(ServerPid, Path, Headers, ReqOpts) ->
-	request(ServerPid, <<"HEAD">>, Path, Headers, <<>>, ReqOpts).
+  request(ServerPid, <<"HEAD">>, Path, Headers, <<>>, ReqOpts).
 
 -spec options(pid(), iodata()) -> reference().
 options(ServerPid, Path) ->
-	request(ServerPid, <<"OPTIONS">>, Path, [], <<>>).
+  request(ServerPid, <<"OPTIONS">>, Path, []).
 
--spec options(pid(), iodata(), req_headers()) -> reference().
+-spec options(pid(), iodata(), headers()) -> reference().
 options(ServerPid, Path, Headers) ->
-	request(ServerPid, <<"OPTIONS">>, Path, Headers, <<>>).
+  request(ServerPid, <<"OPTIONS">>, Path, Headers).
 
--spec options(pid(), iodata(), req_headers(), req_opts()) -> reference().
+-spec options(pid(), iodata(), headers(), req_opts()) -> reference().
 options(ServerPid, Path, Headers, ReqOpts) ->
-	request(ServerPid, <<"OPTIONS">>, Path, Headers, <<>>, ReqOpts).
+  request(ServerPid, <<"OPTIONS">>, Path, Headers, <<>>, ReqOpts).
 
--spec patch(pid(), iodata(), req_headers()) -> reference().
+-spec patch(pid(), iodata(), headers()) -> reference().
 patch(ServerPid, Path, Headers) ->
-	headers(ServerPid, <<"PATCH">>, Path, Headers).
+  request(ServerPid, <<"PATCH">>, Path, Headers).
 
--spec patch(pid(), iodata(), req_headers(), iodata() | req_opts()) -> reference().
-patch(ServerPid, Path, Headers, ReqOpts) when is_map(ReqOpts) ->
-	headers(ServerPid, <<"PATCH">>, Path, Headers, ReqOpts);
+-spec patch(pid(), iodata(), headers(), iodata()) -> reference().
 patch(ServerPid, Path, Headers, Body) ->
-	request(ServerPid, <<"PATCH">>, Path, Headers, Body).
+  request(ServerPid, <<"PATCH">>, Path, Headers, Body).
 
--spec patch(pid(), iodata(), req_headers(), iodata(), req_opts()) -> reference().
+-spec patch(pid(), iodata(), headers(), iodata(), req_opts()) -> reference().
 patch(ServerPid, Path, Headers, Body, ReqOpts) ->
-	request(ServerPid, <<"PATCH">>, Path, Headers, Body, ReqOpts).
+  request(ServerPid, <<"PATCH">>, Path, Headers, Body, ReqOpts).
 
--spec post(pid(), iodata(), req_headers()) -> reference().
+-spec post(pid(), iodata(), headers()) -> reference().
 post(ServerPid, Path, Headers) ->
-	headers(ServerPid, <<"POST">>, Path, Headers).
+  request(ServerPid, <<"POST">>, Path, Headers).
 
--spec post(pid(), iodata(), req_headers(), iodata() | req_opts()) -> reference().
-post(ServerPid, Path, Headers, ReqOpts) when is_map(ReqOpts) ->
-	headers(ServerPid, <<"POST">>, Path, Headers, ReqOpts);
+-spec post(pid(), iodata(), headers(), iodata()) -> reference().
 post(ServerPid, Path, Headers, Body) ->
-	request(ServerPid, <<"POST">>, Path, Headers, Body).
+  request(ServerPid, <<"POST">>, Path, Headers, Body).
 
--spec post(pid(), iodata(), req_headers(), iodata(), req_opts()) -> reference().
+-spec post(pid(), iodata(), headers(), iodata(), req_opts()) -> reference().
 post(ServerPid, Path, Headers, Body, ReqOpts) ->
-	request(ServerPid, <<"POST">>, Path, Headers, Body, ReqOpts).
+  request(ServerPid, <<"POST">>, Path, Headers, Body, ReqOpts).
 
--spec put(pid(), iodata(), req_headers()) -> reference().
+-spec put(pid(), iodata(), headers()) -> reference().
 put(ServerPid, Path, Headers) ->
-	headers(ServerPid, <<"PUT">>, Path, Headers).
+  request(ServerPid, <<"PUT">>, Path, Headers).
 
--spec put(pid(), iodata(), req_headers(), iodata() | req_opts()) -> reference().
-put(ServerPid, Path, Headers, ReqOpts) when is_map(ReqOpts) ->
-	headers(ServerPid, <<"PUT">>, Path, Headers, ReqOpts);
+-spec put(pid(), iodata(), headers(), iodata()) -> reference().
 put(ServerPid, Path, Headers, Body) ->
-	request(ServerPid, <<"PUT">>, Path, Headers, Body).
+  request(ServerPid, <<"PUT">>, Path, Headers, Body).
 
--spec put(pid(), iodata(), req_headers(), iodata(), req_opts()) -> reference().
+-spec put(pid(), iodata(), headers(), iodata(), req_opts()) -> reference().
 put(ServerPid, Path, Headers, Body, ReqOpts) ->
-	request(ServerPid, <<"PUT">>, Path, Headers, Body, ReqOpts).
+  request(ServerPid, <<"PUT">>, Path, Headers, Body, ReqOpts).
 
-%% Generic requests interface.
+-spec request(pid(), iodata(), iodata(), headers()) -> reference().
+request(ServerPid, Method, Path, Headers) ->
+  request(ServerPid, Method, Path, Headers, <<>>, #{}).
 
--spec headers(pid(), iodata(), iodata(), req_headers()) -> reference().
-headers(ServerPid, Method, Path, Headers) ->
-	headers(ServerPid, Method, Path, Headers, #{}).
-
--spec headers(pid(), iodata(), iodata(), req_headers(), req_opts()) -> reference().
-headers(ServerPid, Method, Path, Headers, ReqOpts) ->
-	StreamRef = make_ref(),
-	ReplyTo = maps:get(reply_to, ReqOpts, self()),
-	gen_statem2:cast(ServerPid, {headers, ReplyTo, StreamRef,
-		Method, Path, normalize_headers(Headers)}),
-	StreamRef.
-
--spec request(pid(), iodata(), iodata(), req_headers(), iodata()) -> reference().
+-spec request(pid(), iodata(), iodata(), headers(), iodata()) -> reference().
 request(ServerPid, Method, Path, Headers, Body) ->
-	request(ServerPid, Method, Path, Headers, Body, #{}).
+  request(ServerPid, Method, Path, Headers, Body, #{}).
 
--spec request(pid(), iodata(), iodata(), req_headers(), iodata(), req_opts()) -> reference().
+-spec request(pid(), iodata(), iodata(), headers(), iodata(), req_opts()) -> reference().
 request(ServerPid, Method, Path, Headers, Body, ReqOpts) ->
-	StreamRef = make_ref(),
-	ReplyTo = maps:get(reply_to, ReqOpts, self()),
-	gen_statem2:cast(ServerPid, {request, ReplyTo, StreamRef,
-		Method, Path, normalize_headers(Headers), Body}),
-	StreamRef.
+  StreamRef = make_ref(),
+  ReplyTo = maps:get(reply_to, ReqOpts, self()),
+  ServerPid ! {request, ReplyTo, StreamRef, Method, Path, normalize_headers(Headers), Body},
+  StreamRef.
 
-normalize_headers([]) ->
-	[];
-normalize_headers([{Name, Value}|Tail]) when is_binary(Name) ->
-	[{string:lowercase(Name), Value}|normalize_headers(Tail)];
-normalize_headers([{Name, Value}|Tail]) when is_list(Name) ->
-	[{string:lowercase(unicode:characters_to_binary(Name)), Value}|normalize_headers(Tail)];
-normalize_headers([{Name, Value}|Tail]) when is_atom(Name) ->
-	[{string:lowercase(atom_to_binary(Name, latin1)), Value}|normalize_headers(Tail)];
+%%normalize_headers([]) ->
+%%	[];
+%%normalize_headers([{Name, Value}|Tail]) when is_binary(Name) ->
+%%	[{string:lowercase(Name), Value}|normalize_headers(Tail)];
+%%normalize_headers([{Name, Value}|Tail]) when is_list(Name) ->
+%%	[{string:lowercase(unicode:characters_to_binary(Name)), Value}|normalize_headers(Tail)];
+%%normalize_headers([{Name, Value}|Tail]) when is_atom(Name) ->
+%%	[{string:lowercase(atom_to_binary(Name, latin1)), Value}|normalize_headers(Tail)];
+%%normalize_headers(Headers) when is_map(Headers) ->
+%%	normalize_headers(maps:to_list(Headers)).
+
 normalize_headers(Headers) when is_map(Headers) ->
-	normalize_headers(maps:to_list(Headers)).
+  maps:to_list(Headers);
+normalize_headers(Headers) when is_list(Headers) ->
+  Headers.
 
 %% Streaming data.
 
 -spec data(pid(), reference(), fin | nofin, iodata()) -> ok.
 data(ServerPid, StreamRef, IsFin, Data) ->
-	case iolist_size(Data) of
-		0 when IsFin =:= nofin ->
-			ok;
-		_ ->
-			gen_statem2:cast(ServerPid, {data, self(), StreamRef, IsFin, Data})
-	end.
+  ServerPid ! {data, self(), StreamRef, IsFin, Data},
+  ok.
 
 %% Tunneling.
 
 -spec connect(pid(), connect_destination()) -> reference().
 connect(ServerPid, Destination) ->
-	connect(ServerPid, Destination, [], #{}).
+  connect(ServerPid, Destination, [], #{}).
 
--spec connect(pid(), connect_destination(), req_headers()) -> reference().
+-spec connect(pid(), connect_destination(), headers()) -> reference().
 connect(ServerPid, Destination, Headers) ->
-	connect(ServerPid, Destination, Headers, #{}).
+  connect(ServerPid, Destination, Headers, #{}).
 
--spec connect(pid(), connect_destination(), req_headers(), req_opts()) -> reference().
+-spec connect(pid(), connect_destination(), headers(), req_opts()) -> reference().
 connect(ServerPid, Destination, Headers, ReqOpts) ->
-	StreamRef = make_ref(),
-	ReplyTo = maps:get(reply_to, ReqOpts, self()),
-	gen_statem2:cast(ServerPid, {connect, ReplyTo, StreamRef, Destination, Headers}),
-	StreamRef.
+  StreamRef = make_ref(),
+  ReplyTo = maps:get(reply_to, ReqOpts, self()),
+  ServerPid ! {connect, ReplyTo, StreamRef, Destination, Headers},
+  StreamRef.
 
 %% Awaiting gun messages.
 
--type resp_headers() :: [{binary(), binary()}].
--type await_result() :: {inform, 100..199, resp_headers()}
-	| {response, fin | nofin, non_neg_integer(), resp_headers()}
-	| {data, fin | nofin, binary()}
-	| {trailers, resp_headers()}
-	| {push, reference(), binary(), binary(), resp_headers()}
-	| {upgrade, [binary()], resp_headers()}
-	| {ws, ws_frame()} %% @todo Excluding ping/pong, for now.
-	| {error, {stream_error | connection_error | down, any()} | timeout}.
+%% @todo spec await await_body
 
--spec await(pid(), reference()) -> await_result().
 await(ServerPid, StreamRef) ->
-	MRef = monitor(process, ServerPid),
-	Res = await(ServerPid, StreamRef, 5000, MRef),
-	demonitor(MRef, [flush]),
-	Res.
+  MRef = monitor(process, ServerPid),
+  Res = await(ServerPid, StreamRef, 5000, MRef),
+  demonitor(MRef, [flush]),
+  Res.
 
--spec await(pid(), reference(), timeout() | reference()) -> await_result().
 await(ServerPid, StreamRef, MRef) when is_reference(MRef) ->
-	await(ServerPid, StreamRef, 5000, MRef);
+  await(ServerPid, StreamRef, 5000, MRef);
 await(ServerPid, StreamRef, Timeout) ->
-	MRef = monitor(process, ServerPid),
-	Res = await(ServerPid, StreamRef, Timeout, MRef),
-	demonitor(MRef, [flush]),
-	Res.
+  MRef = monitor(process, ServerPid),
+  Res = await(ServerPid, StreamRef, Timeout, MRef),
+  demonitor(MRef, [flush]),
+  Res.
 
--spec await(pid(), reference(), timeout(), reference()) -> await_result().
+%% @todo Add gun_upgrade and gun_ws?
 await(ServerPid, StreamRef, Timeout, MRef) ->
-	receive
-		{gun_inform, ServerPid, StreamRef, Status, Headers} ->
-			{inform, Status, Headers};
-		{gun_response, ServerPid, StreamRef, IsFin, Status, Headers} ->
-			{response, IsFin, Status, Headers};
-		{gun_data, ServerPid, StreamRef, IsFin, Data} ->
-			{data, IsFin, Data};
-		{gun_trailers, ServerPid, StreamRef, Trailers} ->
-			{trailers, Trailers};
-		{gun_push, ServerPid, StreamRef, NewStreamRef, Method, URI, Headers} ->
-			{push, NewStreamRef, Method, URI, Headers};
-		{gun_upgrade, ServerPid, StreamRef, Protocols, Headers} ->
-			{upgrade, Protocols, Headers};
-		{gun_ws, ServerPid, StreamRef, Frame} ->
-			{ws, Frame};
-		{gun_error, ServerPid, StreamRef, Reason} ->
-			{error, {stream_error, Reason}};
-		{gun_error, ServerPid, Reason} ->
-			{error, {connection_error, Reason}};
-		{'DOWN', MRef, process, ServerPid, Reason} ->
-			{error, {down, Reason}}
-	after Timeout ->
-		{error, timeout}
-	end.
+  receive
+    {gun_inform, ServerPid, StreamRef, Status, Headers} ->
+      {inform, Status, Headers};
+    {gun_response, ServerPid, StreamRef, IsFin, Status, Headers} ->
+      {response, IsFin, Status, Headers};
+    {gun_data, ServerPid, StreamRef, IsFin, Data} ->
+      {data, IsFin, Data};
+    {gun_trailers, ServerPid, StreamRef, Trailers} ->
+      {trailers, Trailers};
+    {gun_push, ServerPid, StreamRef, NewStreamRef, Method, URI, Headers} ->
+      {push, NewStreamRef, Method, URI, Headers};
+    {gun_error, ServerPid, StreamRef, Reason} ->
+      {error, Reason};
+    {gun_error, ServerPid, Reason} ->
+      {error, Reason};
+    {'DOWN', MRef, process, ServerPid, Reason} ->
+      {error, Reason}
+  after Timeout ->
+    {error, timeout}
+  end.
 
--type await_body_result() :: {ok, binary()}
-	| {ok, binary(), resp_headers()}
-	| {error, {stream_error | connection_error | down, any()} | timeout}.
-
--spec await_body(pid(), reference()) -> await_body_result().
 await_body(ServerPid, StreamRef) ->
-	MRef = monitor(process, ServerPid),
-	Res = await_body(ServerPid, StreamRef, 5000, MRef, <<>>),
-	demonitor(MRef, [flush]),
-	Res.
+  MRef = monitor(process, ServerPid),
+  Res = await_body(ServerPid, StreamRef, 5000, MRef, <<>>),
+  demonitor(MRef, [flush]),
+  Res.
 
--spec await_body(pid(), reference(), timeout() | reference()) -> await_body_result().
 await_body(ServerPid, StreamRef, MRef) when is_reference(MRef) ->
-	await_body(ServerPid, StreamRef, 5000, MRef, <<>>);
+  await_body(ServerPid, StreamRef, 5000, MRef, <<>>);
 await_body(ServerPid, StreamRef, Timeout) ->
-	MRef = monitor(process, ServerPid),
-	Res = await_body(ServerPid, StreamRef, Timeout, MRef, <<>>),
-	demonitor(MRef, [flush]),
-	Res.
+  MRef = monitor(process, ServerPid),
+  Res = await_body(ServerPid, StreamRef, Timeout, MRef, <<>>),
+  demonitor(MRef, [flush]),
+  Res.
 
--spec await_body(pid(), reference(), timeout(), reference()) -> await_body_result().
 await_body(ServerPid, StreamRef, Timeout, MRef) ->
-	await_body(ServerPid, StreamRef, Timeout, MRef, <<>>).
+  await_body(ServerPid, StreamRef, Timeout, MRef, <<>>).
 
 await_body(ServerPid, StreamRef, Timeout, MRef, Acc) ->
-	receive
-		{gun_data, ServerPid, StreamRef, nofin, Data} ->
-			await_body(ServerPid, StreamRef, Timeout, MRef,
-				<< Acc/binary, Data/binary >>);
-		{gun_data, ServerPid, StreamRef, fin, Data} ->
-			{ok, << Acc/binary, Data/binary >>};
-		%% It's OK to return trailers here because the client
-		%% specifically requested them.
-		{gun_trailers, ServerPid, StreamRef, Trailers} ->
-			{ok, Acc, Trailers};
-		{gun_error, ServerPid, StreamRef, Reason} ->
-			{error, {stream_error, Reason}};
-		{gun_error, ServerPid, Reason} ->
-			{error, {connection_error, Reason}};
-		{'DOWN', MRef, process, ServerPid, Reason} ->
-			{error, {down, Reason}}
-	after Timeout ->
-		{error, timeout}
-	end.
+  receive
+    {gun_data, ServerPid, StreamRef, nofin, Data} ->
+      await_body(ServerPid, StreamRef, Timeout, MRef,
+        <<Acc/binary, Data/binary>>);
+    {gun_data, ServerPid, StreamRef, fin, Data} ->
+      {ok, <<Acc/binary, Data/binary>>};
+  %% It's OK to return trailers here because the client
+  %% specifically requested them.
+    {gun_trailers, ServerPid, StreamRef, Trailers} ->
+      {ok, Acc, Trailers};
+    {gun_error, ServerPid, StreamRef, Reason} ->
+      {error, Reason};
+    {gun_error, ServerPid, Reason} ->
+      {error, Reason};
+    {'DOWN', MRef, process, ServerPid, Reason} ->
+      {error, Reason}
+  after Timeout ->
+    {error, timeout}
+  end.
 
--spec await_up(pid()) -> {ok, http | http2} | {error, {down, any()} | timeout}.
+-spec await_up(pid()) -> {ok, http | http2} | {error, atom()}.
 await_up(ServerPid) ->
-	MRef = monitor(process, ServerPid),
-	Res = await_up(ServerPid, 5000, MRef),
-	demonitor(MRef, [flush]),
-	Res.
+  MRef = monitor(process, ServerPid),
+  Res = await_up(ServerPid, 5000, MRef),
+  demonitor(MRef, [flush]),
+  Res.
 
--spec await_up(pid(), reference() | timeout()) -> {ok, http | http2} | {error, {down, any()} | timeout}.
+-spec await_up(pid(), reference() | timeout()) -> {ok, http | http2} | {error, atom()}.
 await_up(ServerPid, MRef) when is_reference(MRef) ->
-	await_up(ServerPid, 5000, MRef);
+  await_up(ServerPid, 5000, MRef);
 await_up(ServerPid, Timeout) ->
-	MRef = monitor(process, ServerPid),
-	Res = await_up(ServerPid, Timeout, MRef),
-	demonitor(MRef, [flush]),
-	Res.
+  MRef = monitor(process, ServerPid),
+  Res = await_up(ServerPid, Timeout, MRef),
+  demonitor(MRef, [flush]),
+  Res.
 
--spec await_up(pid(), timeout(), reference()) -> {ok, http | http2} | {error, {down, any()} | timeout}.
+-spec await_up(pid(), timeout(), reference()) -> {ok, http | http2} | {error, atom()}.
 await_up(ServerPid, Timeout, MRef) ->
-	receive
-		{gun_up, ServerPid, Protocol} ->
-			{ok, Protocol};
-		{'DOWN', MRef, process, ServerPid, Reason} ->
-			{error, {down, Reason}}
-	after Timeout ->
-		{error, timeout}
-	end.
+  receive
+    {gun_up, ServerPid, Protocol} ->
+      {ok, Protocol};
+    {'DOWN', MRef, process, ServerPid, Reason} ->
+      {error, Reason}
+  after Timeout ->
+    {error, timeout}
+  end.
 
 -spec flush(pid() | reference()) -> ok.
 flush(ServerPid) when is_pid(ServerPid) ->
-	flush_pid(ServerPid);
+  flush_pid(ServerPid);
 flush(StreamRef) ->
-	flush_ref(StreamRef).
+  flush_ref(StreamRef).
 
 flush_pid(ServerPid) ->
-	receive
-		{gun_up, ServerPid, _} ->
-			flush_pid(ServerPid);
-    {gun_down, ServerPid, _, _, _, _, _} ->
-			flush_pid(ServerPid);
-		{gun_inform, ServerPid, _, _, _} ->
-			flush_pid(ServerPid);
-		{gun_response, ServerPid, _, _, _, _} ->
-			flush_pid(ServerPid);
-		{gun_data, ServerPid, _, _, _} ->
-			flush_pid(ServerPid);
-		{gun_trailers, ServerPid, _, _} ->
-			flush_pid(ServerPid);
-		{gun_push, ServerPid, _, _, _, _, _, _} ->
-			flush_pid(ServerPid);
-		{gun_error, ServerPid, _, _} ->
-			flush_pid(ServerPid);
-		{gun_error, ServerPid, _} ->
-			flush_pid(ServerPid);
-		{gun_upgrade, ServerPid, _, _, _} ->
-			flush_pid(ServerPid);
-		{gun_ws, ServerPid, _, _} ->
-			flush_pid(ServerPid);
-		{'DOWN', _, process, ServerPid, _} ->
-			flush_pid(ServerPid)
-	after 0 ->
-		ok
-	end.
+  receive
+    {gun_up, ServerPid, _} ->
+      flush_pid(ServerPid);
+    {gun_down, ServerPid, _, _, _, _} ->
+      flush_pid(ServerPid);
+    {gun_inform, ServerPid, _, _, _} ->
+      flush_pid(ServerPid);
+    {gun_response, ServerPid, _, _, _, _} ->
+      flush_pid(ServerPid);
+    {gun_data, ServerPid, _, _, _} ->
+      flush_pid(ServerPid);
+    {gun_trailers, ServerPid, _, _} ->
+      flush_pid(ServerPid);
+    {gun_push, ServerPid, _, _, _, _, _, _} ->
+      flush_pid(ServerPid);
+    {gun_error, ServerPid, _, _} ->
+      flush_pid(ServerPid);
+    {gun_error, ServerPid, _} ->
+      flush_pid(ServerPid);
+    {gun_upgrade, ServerPid, _, _, _} ->
+      flush_pid(ServerPid);
+    {gun_ws, ServerPid, _, _} ->
+      flush_pid(ServerPid);
+    {'DOWN', _, process, ServerPid, _} ->
+      flush_pid(ServerPid)
+  after 0 ->
+    ok
+  end.
 
 flush_ref(StreamRef) ->
-	receive
-		{gun_inform, _, StreamRef, _, _} ->
-			flush_pid(StreamRef);
-		{gun_response, _, StreamRef, _, _, _} ->
-			flush_ref(StreamRef);
-		{gun_data, _, StreamRef, _, _} ->
-			flush_ref(StreamRef);
-		{gun_trailers, _, StreamRef, _} ->
-			flush_ref(StreamRef);
-		{gun_push, _, StreamRef, _, _, _, _, _} ->
-			flush_ref(StreamRef);
-		{gun_error, _, StreamRef, _} ->
-			flush_ref(StreamRef);
-		{gun_upgrade, _, StreamRef, _, _} ->
-			flush_ref(StreamRef);
-		{gun_ws, _, StreamRef, _} ->
-			flush_ref(StreamRef)
-	after 0 ->
-		ok
-	end.
+  receive
+    {gun_inform, _, StreamRef, _, _} ->
+      flush_pid(StreamRef);
+    {gun_response, _, StreamRef, _, _, _} ->
+      flush_ref(StreamRef);
+    {gun_data, _, StreamRef, _, _} ->
+      flush_ref(StreamRef);
+    {gun_trailers, _, StreamRef, _} ->
+      flush_ref(StreamRef);
+    {gun_push, _, StreamRef, _, _, _, _, _} ->
+      flush_ref(StreamRef);
+    {gun_error, _, StreamRef, _} ->
+      flush_ref(StreamRef);
+    {gun_upgrade, _, StreamRef, _, _} ->
+      flush_ref(StreamRef);
+    {gun_ws, _, StreamRef, _} ->
+      flush_ref(StreamRef)
+  after 0 ->
+    ok
+  end.
 
 %% Cancelling a stream.
 
 -spec cancel(pid(), reference()) -> ok.
 cancel(ServerPid, StreamRef) ->
-	gen_statem2:cast(ServerPid, {cancel, self(), StreamRef}).
-
--spec stream_info(pid(), reference()) -> {ok, map() | undefined} | {error, not_connected}.
-stream_info(ServerPid, StreamRef) ->
-	gen_statem2:call(ServerPid, {stream_info, StreamRef}).
+  ServerPid ! {cancel, self(), StreamRef},
+  ok.
 
 %% @todo Allow upgrading an HTTP/1.1 connection to HTTP/2.
 %% http2_upgrade
@@ -696,476 +651,367 @@ stream_info(ServerPid, StreamRef) ->
 
 -spec ws_upgrade(pid(), iodata()) -> reference().
 ws_upgrade(ServerPid, Path) ->
-	ws_upgrade(ServerPid, Path, []).
+  ws_upgrade(ServerPid, Path, []).
 
--spec ws_upgrade(pid(), iodata(), req_headers()) -> reference().
+-spec ws_upgrade(pid(), iodata(), headers()) -> reference().
 ws_upgrade(ServerPid, Path, Headers) ->
-	StreamRef = make_ref(),
-	gen_statem2:cast(ServerPid, {ws_upgrade, self(), StreamRef, Path, Headers}),
-	StreamRef.
+  StreamRef = make_ref(),
+  ServerPid ! {ws_upgrade, self(), StreamRef, Path, Headers},
+  StreamRef.
 
--spec ws_upgrade(pid(), iodata(), req_headers(), ws_opts()) -> reference().
+-spec ws_upgrade(pid(), iodata(), headers(), ws_opts()) -> reference().
 ws_upgrade(ServerPid, Path, Headers, Opts) ->
-	ok = gun_ws:check_options(Opts),
-	StreamRef = make_ref(),
-	gen_statem2:cast(ServerPid, {ws_upgrade, self(), StreamRef, Path, Headers, Opts}),
-	StreamRef.
+  ok = gun_ws:check_options(Opts),
+  StreamRef = make_ref(),
+  ServerPid ! {ws_upgrade, self(), StreamRef, Path, Headers, Opts},
+  StreamRef.
 
 %% @todo ws_send/2 will need to be deprecated in favor of a variant with StreamRef.
 %% But it can be kept for the time being since it can still work for HTTP/1.1.
 -spec ws_send(pid(), ws_frame() | [ws_frame()]) -> ok.
 ws_send(ServerPid, Frames) ->
-	gen_statem2:cast(ServerPid, {ws_send, self(), Frames}).
+  ServerPid ! {ws_send, self(), Frames},
+  ok.
 
 %% Internals.
 
-callback_mode() -> state_functions.
-
 start_link(Owner, Host, Port, Opts) ->
-	gen_statem2:start_link(?MODULE, {Owner, Host, Port, Opts}, []).
+  proc_lib:start_link(?MODULE, proc_lib_hack,
+    [self(), Owner, Host, Port, Opts]).
 
-init({Owner, Host, Port, Opts}) ->
-	Retry = maps:get(retry, Opts, 0),
-	Transport = case maps:get(transport, Opts, default_transport(Port)) of
-		tcp -> gun_tcp;
-		tls -> gun_tls
-	end,
-
-  {ProxyHandle, ProxyOpt, Host1, Port1} = case maps:get(proxy, Opts, undefined) of
-	 	Url when is_binary(Url) orelse is_list(Url) ->
-      Url1 = gun_url:parse_url(Url),
-      #{host := ProxyHost, port := ProxyPort} = gun_url:normalize(Url1),
-      {ProxyUser, ProxyPass} =
-        case maps:get(proxy_auth, Opts) of
-          {U, P} -> {U, P};
-          _ -> {undefined, undefined}
-        end,
-			Insecure = maps:get(insecure, Opts, true),
-      PO = [{connect_host, Host}, {connect_port, Port}, {connect_transport, Transport},
-        {connect_user, ProxyUser}, {connect_pass, ProxyPass}, {insecure, Insecure}, binary, {active, false}],
-      select_http_proxy(Transport, PO, ProxyHost, ProxyPort);
-    {ProxyHost, ProxyPort} ->
-      {ProxyUser, ProxyPass} =
-        case maps:get(proxy_auth, Opts, nil) of
-          {U, P} -> {U, P};
-          _ -> {undefined, undefined}
-        end,
-			Insecure = maps:get(insecure, Opts, true),
-      PO = [{connect_host, Host}, {connect_port, Port}, {connect_transport, Transport},
-        {connect_user, ProxyUser}, {connect_pass, ProxyPass}, {insecure, Insecure}, binary, {active, false}],
-      select_http_proxy(Transport, PO, ProxyHost, ProxyPort);
-    {connect, ProxyHost, ProxyPort} ->
-      {ProxyUser, ProxyPass} =
-        case maps:get(proxy_auth, Opts, nil) of
-          {U, P} -> {U, P};
-          _ -> {undefined, undefined}
-        end,
-			Insecure = maps:get(insecure, Opts, true),
-      PO = [{connect_host, Host}, {connect_port, Port}, {connect_transport, Transport},
-        {connect_user, ProxyUser}, {connect_pass, ProxyPass}, {insecure, Insecure}, binary, {active, false}],
-      select_http_proxy(Transport, PO, ProxyHost, ProxyPort);
-    {socks5, ProxyHost, ProxyPort} ->
-      {ProxyUser, ProxyPass} =
-        case maps:get(proxy_auth, Opts, nil) of
-          {U, P} -> {U, P};
-          _ -> {undefined, undefined}
-        end,
-			Insecure = maps:get(insecure, Opts, true),
-      ProxyResolve = maps:get(socks5_resolve, Opts, undefined),
-      PO = [{socks5_host, ProxyHost}, {socks5_port, ProxyPort}, {socks5_user, ProxyUser}, {socks5_pass, ProxyPass},
-        {socks5_resolve, ProxyResolve}, {socks5_transport, Transport}, {insecure, Insecure}, binary, {active, false}],
-      {gun_socks5_proxy, PO, Host, Port};
-	 	_ ->
-      {Transport, [binary, {active, false}], Host, Port}
- 	end,
-	OwnerRef = monitor(process, Owner),
-	State = #state{owner=Owner, owner_ref=OwnerRef,
-		host = Host1, port = Port1, origin_host=Host, origin_port=Port,
-		opts=Opts, transport=Transport, proxy_handle = ProxyHandle, proxy_opt = ProxyOpt, messages=Transport:messages()},
-	{ok, not_connected, State,
-		[{selective, fun selective_loop_receive/1}, {next_event, internal, {retries, Retry}}]}.
-
-
-selective_loop_receive(HibernateAfterTimeout) ->
-	receive
-		{'$gen_cast', {shutdown, _}} = Msg ->
-			Msg;
-    Msg ->
-      Msg
-  after
-    HibernateAfterTimeout ->
-			{receive_empty, true}
+proc_lib_hack(Parent, Owner, Host, Port, Opts) ->
+  try
+    init(Parent, Owner, Host, Port, Opts)
+  catch
+    _:normal -> exit(normal);
+    _:shutdown -> exit(shutdown);
+    _:{shutdown, _} = Reason ->
+      exit(Reason);
+    _:Reason:StackTrace -> exit({Reason, StackTrace})
   end.
+
+init(Parent, Owner, Host, Port, Opts) ->
+  ok = proc_lib:init_ack(Parent, {ok, self()}),
+  Retry = maps:get(retry, Opts, 5),
+  Transport = case maps:get(transport, Opts, default_transport(Port)) of
+                tcp -> gun_tcp;
+                tls -> gun_tls
+              end,
+
+  OwnerRef = monitor(process, Owner),
+  transport_connect(#state{parent = Parent, owner = Owner, owner_ref = OwnerRef,
+    host = Host, port = Port, origin_host = Host, origin_port = Port,
+    opts = Opts, transport = Transport}, Retry).
 
 default_transport(443) -> tls;
 default_transport(_) -> tcp.
 
-select_http_proxy(gun_tcp, _PO, ProxyHost, ProxyPort) -> {gun_tcp, [binary, {active, false}], ProxyHost, ProxyPort};
-select_http_proxy(_, PO, ProxyHost, ProxyPort) -> {gun_http_proxy, PO, ProxyHost, ProxyPort}.
+transport_connect(State = #state{host = Host, port = Port, opts = Opts, transport = Transport = gun_tls}, Retries) ->
+  TransportOpts = [binary, {active, false} | ensure_alpn(
+    maps:get(protocols, Opts, [http2, http]),
+    maps:get(transport_opts, Opts, []))],
+  case Transport:connect(Host, Port, TransportOpts, maps:get(connect_timeout, Opts, infinity)) of
+    {ok, Socket} ->
+      {Protocol, ProtoOptsKey} = case ssl:negotiated_protocol(Socket) of
+                                   {ok, <<"h2">>} -> {gun_http2, http2_opts};
+                                   _ -> {gun_http, http_opts}
+                                 end,
+      up(State, Socket, Protocol, ProtoOptsKey);
+    {error, Reason} ->
+      retry(State#state{last_error = Reason}, Retries)
+  end;
+transport_connect(State = #state{host = Host, port = Port, opts = Opts, transport = Transport}, Retries) ->
+  TransportOpts = [binary, {active, false}
+    | maps:get(transport_opts, Opts, [])],
+  case Transport:connect(Host, Port, TransportOpts, maps:get(connect_timeout, Opts, infinity)) of
+    {ok, Socket} ->
+      {Protocol, ProtoOptsKey} = case maps:get(protocols, Opts, [http]) of
+                                   [http] -> {gun_http, http_opts};
+                                   [http2] -> {gun_http2, http2_opts}
+                                 end,
+      up(State, Socket, Protocol, ProtoOptsKey);
+    {error, Reason} ->
+      retry(State#state{last_error = Reason}, Retries)
+  end.
 
-format_path_headers(gun_tcp, OriginHost, OriginPort, Path, Headers, Opts) ->
-	IsProxy = is_http_proxy(Opts),
-	case maps:get(proxy_auth, Opts, undefined) of
-		{U, P} when IsProxy == true ->
-			{add_host_to_path(OriginHost, OriginPort, Path), add_proxy_authorization(U, P, Headers)};
-		_ ->
-			{Path, Headers}
-	end;
+ensure_alpn(Protocols0, TransportOpts) ->
+  Protocols = [case P of
+                 http -> <<"http/1.1">>;
+                 http2 -> <<"h2">>
+               end || P <- Protocols0],
+  [
+    {alpn_advertised_protocols, Protocols},
+    {client_preferred_next_protocols, {client, Protocols, <<"http/1.1">>}}
+    | TransportOpts].
 
-format_path_headers(_, _OriginHost, _OriginPort, Path, Headers, _Opts) ->
-	{Path, Headers}.
+up(State = #state{owner = Owner, opts = Opts, transport = Transport}, Socket, Protocol, ProtoOptsKey) ->
+  ProtoOpts = maps:get(ProtoOptsKey, Opts, #{}),
+  ProtoState = Protocol:init(Owner, Socket, Transport, ProtoOpts),
+  Owner ! {gun_up, self(), Protocol:name()},
+  before_loop(State#state{socket = Socket, protocol = Protocol, protocol_state = ProtoState}).
 
-add_host_to_path(OriginHost, OriginPort, Path) ->
-	case OriginPort of
-		80 ->
-			iolist_to_binary([<<"http://">>, OriginHost, Path]);
-		_ ->
-			iolist_to_binary([<<"http://">>, OriginHost, integer_to_binary(OriginPort), Path])
-	end.
+down(State = #state{owner = Owner, opts = Opts, protocol = Protocol, protocol_state = ProtoState}, Reason) ->
+  {KilledStreams, UnprocessedStreams} = Protocol:down(ProtoState),
+  Owner ! {gun_down, self(), Protocol:name(), Reason, KilledStreams, UnprocessedStreams},
+  retry(State#state{socket = undefined, protocol = undefined, protocol_state = undefined,
+    last_error = Reason}, maps:get(retry, Opts, 5)).
 
-add_proxy_authorization(ProxyUser, ProxyPass, Headers) ->
-	HasProxyAuthorization = lists:keymember(<<"proxy-authorization">>, 1, Headers),
-	case HasProxyAuthorization of
-		false ->
-			Credentials = base64:encode(<<ProxyUser/binary, ":", ProxyPass/binary>>),
-			[{<<"proxy-authorization">>, [<<"Basic ">>, Credentials]} | Headers];
-		true ->
-			Headers
-	end.
+retry(#state{last_error = Reason}, 0) ->
+  exit({shutdown, Reason});
+retry(State = #state{keepalive_ref = KeepaliveRef}, Retries) when is_reference(KeepaliveRef) ->
+  _ = erlang:cancel_timer(KeepaliveRef),
+  %% Flush if we have a keepalive message
+  receive
+    keepalive -> ok
+  after 0 ->
+    ok
+  end,
+  retry_loop(State#state{keepalive_ref = undefined}, Retries - 1);
+retry(State, Retries) ->
+  retry_loop(State, Retries - 1).
 
-is_http_proxy(Opts) ->
-	case maps:get(proxy, Opts, undefined) of
-		Url when is_binary(Url) orelse is_list(Url) ->
-			true;
-		{_ProxyHost, _ProxyPort} ->
-			true;
-		{connect, _ProxyHost, _ProxyPort} ->
-			true;
-		_ ->
-			false
-	end.
+retry_loop(State = #state{parent = Parent, opts = Opts}, Retries) ->
+  _ = erlang:send_after(maps:get(retry_timeout, Opts, 5000), self(), retry),
+  receive
+    retry ->
+      transport_connect(State, Retries);
+    {system, From, Request} ->
+      sys:handle_system_msg(Request, From, Parent, ?MODULE, [],
+        {retry_loop, State, Retries})
+  end.
 
-ensure_gun_tcp_opt(TransOpts0) ->
-	SslOpts = [verify, verify_fun, fail_if_no_peer_cert, depth, cert, certfile, key, keyfile, password, cacerts,
-		cacertfile, dh, dhfile, ciphers, user_lookup_fun, reuse_sessions, reuse_session, next_protocols_advertised,
-		client_preferred_next_protocols, alpn_advertised_protocols, log_alert, server_name_indication, customize_hostname_check,
-		sni_hosts, sni_fun, protocol, handshake, secure_renegotiate, crl_check, crl_cache, partial_chain, versions],
-	lists:filter(fun(X) ->
-			case X of
-				{K, _} ->
-					lists:member(K, SslOpts) == false;
-				K ->
-					lists:member(K, SslOpts) == false
-			end
-		end, TransOpts0).
+before_loop(State = #state{opts = Opts, protocol = Protocol}) ->
+  %% @todo Might not be worth checking every time?
+  ProtoOptsKey = case Protocol of
+                   gun_http -> http_opts;
+                   gun_http2 -> http2_opts
+                 end,
+  ProtoOpts = maps:get(ProtoOptsKey, Opts, #{}),
+  Keepalive = maps:get(keepalive, ProtoOpts, 5000),
+  KeepaliveRef = case Keepalive of
+                   infinity -> undefined;
+                   _ -> erlang:send_after(Keepalive, self(), keepalive)
+                 end,
+  loop(State#state{keepalive_ref = KeepaliveRef}).
 
-not_connected(_, {retries, Retries},
-		State=#state{host=Host, port=Port, opts=Opts, transport=Transport, proxy_opt = ProxyOpt, proxy_handle = ProxyHandle}) ->
-	TransOpts0 = maps:get(transport_opts, Opts, []),
-	TransOpts1 = case Transport of
-		gun_tcp -> ensure_gun_tcp_opt(TransOpts0);
-		gun_tls -> ensure_alpn(maps:get(protocols, Opts, [http2, http]), TransOpts0)
-	end,
-
-	TransOpts = ProxyOpt ++ TransOpts1,
-	ConnectTimeout = maps:get(connect_timeout, Opts, infinity),
-	case ProxyHandle:connect(Host, Port, TransOpts, ConnectTimeout) of
-		{ok, Socket} when Transport =:= gun_tcp ->
-			Protocol = case maps:get(protocols, Opts, [http]) of
-				[http] -> gun_http;
-				[http2] -> gun_http2
-			end,
-			{next_state, connected, State,
-				{next_event, internal, {connected, Socket, Protocol}}};
-		{ok, Socket} when Transport =:= gun_tls ->
-			Protocol = case ssl:negotiated_protocol(normalize_socket(Socket)) of
-				{ok, <<"h2">>} -> gun_http2;
-				_ -> gun_http
-			end,
-			{next_state, connected, State,
-				{next_event, internal, {connected, Socket, Protocol}}};
-		{error, Reason} when Retries =:= 0 ->
-			{stop, {shutdown, Reason}};
-		{error, _Reason} ->
-			Timeout = maps:get(retry_timeout, Opts, 5000),
-			{keep_state, State,
-				{state_timeout, Timeout, {retries, Retries - 1}}}
-	end;
-not_connected({call, From}, {stream_info, _}, _) ->
-	{keep_state_and_data, {reply, From, {error, not_connected}}};
-not_connected(Type, Event, State) ->
-	handle_common(Type, Event, ?FUNCTION_NAME, State).
-
-ensure_alpn(Protocols0, TransOpts) ->
-	Protocols = [case P of
-		http -> <<"http/1.1">>;
-		http2 -> <<"h2">>
-	end || P <- Protocols0],
-	[
-		{alpn_advertised_protocols, Protocols},
-		{client_preferred_next_protocols, {client, Protocols, <<"http/1.1">>}}
-	|TransOpts].
-
-connected(internal, {connected, Socket, Protocol},
-		State=#state{owner=Owner, opts=Opts, transport=Transport}) ->
-	ProtoOptsKey = case Protocol of
-		gun_http -> http_opts;
-		gun_http2 -> http2_opts
-	end,
-	ProtoOpts = maps:get(ProtoOptsKey, Opts, #{}),
-	ProtoState = Protocol:init(Owner, normalize_socket(Socket), Transport, ProtoOpts),
-	Owner ! {gun_up, self(), Protocol:name()},
-	{keep_state, keepalive_timeout(active(State#state{socket = normalize_socket(Socket), socket_t = Socket,
-		protocol=Protocol, protocol_state=ProtoState}))};
-%% Socket events.
-connected(info, {OK, Socket, Data}, State=#state{socket=Socket, messages={OK, _, _},
-		protocol=Protocol, protocol_state=ProtoState}) ->
-	commands(Protocol:handle(Data, ProtoState), active(State));
-connected(info, {Closed, Socket}, State=#state{socket=Socket, messages={_, Closed, _}}) ->
-	disconnect(State, closed);
-connected(info, {Error, Socket, Reason}, State=#state{socket=Socket, messages={_, _, Error}}) ->
-	disconnect(State, {error, Reason});
-%% Timeouts.
-%% @todo HTTP/2 requires more timeouts than just the keepalive timeout.
-%% We should have a timeout function in protocols that deal with
-%% received timeouts. Currently the timeout messages are ignored.
-connected(info, keepalive, State=#state{protocol=Protocol, protocol_state=ProtoState}) ->
-	ProtoState2 = Protocol:keepalive(ProtoState),
-	{keep_state, keepalive_timeout(State#state{protocol_state=ProtoState2})};
-%% Public HTTP interface.
-connected(cast, {headers, ReplyTo, StreamRef, Method, Path, Headers},
-		State=#state{origin_host=Host, origin_port=Port,
-			protocol=Protocol, protocol_state=ProtoState}) ->
-	ProtoState2 = Protocol:headers(ProtoState,
-		StreamRef, ReplyTo, Method, Host, Port, Path, Headers),
-	{keep_state, State#state{protocol_state=ProtoState2}};
-connected(cast, {request, ReplyTo, StreamRef, Method, Path, Headers, Body},
-		State=#state{origin_host=Host, origin_port=Port,
-			protocol=Protocol, protocol_state=ProtoState,
-			proxy_handle=ProxyHandle, opts=Opts}) ->
-	{Path1, Headers1} = format_path_headers(ProxyHandle, Host, Port, Path, Headers, Opts),
-	ProtoState2 = Protocol:request(ProtoState,
-		StreamRef, ReplyTo, Method, Host, Port, Path1, Headers1, Body),
-	{keep_state, State#state{protocol_state=ProtoState2}};
+loop(State = #state{parent = Parent, owner = Owner, owner_ref = OwnerRef,
+  origin_host = Host, origin_port = Port, opts = Opts, socket = Socket,
+  transport = Transport, protocol = Protocol, protocol_state = ProtoState}) ->
+  {OK, Closed, Error} = Transport:messages(),
+  Transport:setopts(Socket, [{active, once}]),
+  receive
+    {OK, Socket, Data} ->
+      case Protocol:handle(Data, ProtoState) of
+        Commands when is_list(Commands) ->
+          commands(Commands, State);
+        Command ->
+          commands([Command], State)
+      end;
+    {Closed, Socket} ->
+      Protocol:close(ProtoState),
+      Transport:close(Socket),
+      down(State, closed);
+    {Error, Socket, Reason} ->
+      Protocol:close(ProtoState),
+      Transport:close(Socket),
+      down(State, {error, Reason});
+    {OK, _PreviousSocket, _Data} ->
+      loop(State);
+    {Closed, _PreviousSocket} ->
+      loop(State);
+    {Error, _PreviousSocket, _} ->
+      loop(State);
+    keepalive ->
+      ProtoState2 = Protocol:keepalive(ProtoState),
+      before_loop(State#state{protocol_state = ProtoState2});
+    {request, ReplyTo, StreamRef, Method, Path, Headers, <<>>} ->
+      ProtoState2 = Protocol:request(ProtoState,
+        StreamRef, ReplyTo, Method, Host, Port, Path, Headers),
+      loop(State#state{protocol_state = ProtoState2});
+    {request, ReplyTo, StreamRef, Method, Path, Headers, Body} ->
+      ProtoState2 = Protocol:request(ProtoState,
+        StreamRef, ReplyTo, Method, Host, Port, Path, Headers, Body),
+      loop(State#state{protocol_state = ProtoState2});
 %% @todo Do we want to reject ReplyTo if it's not the process
 %% who initiated the connection? For both data and cancel.
-connected(cast, {data, ReplyTo, StreamRef, IsFin, Data},
-		State=#state{protocol=Protocol, protocol_state=ProtoState}) ->
-	ProtoState2 = Protocol:data(ProtoState, StreamRef, ReplyTo, IsFin, Data),
-	{keep_state, State#state{protocol_state=ProtoState2}};
-connected(cast, {connect, ReplyTo, StreamRef, Destination0, Headers},
-		State=#state{protocol=Protocol, protocol_state=ProtoState}) ->
-	%% The protocol option has been deprecated in favor of the protocols option.
-	%% Nobody probably ended up using it, but let's not break the interface.
-	Destination1 = case Destination0 of
-		#{protocols := _} ->
-			Destination0;
-		#{protocol := DestProto} ->
-			Destination0#{protocols => [DestProto]};
-		_ ->
-			Destination0
-	end,
-	Destination = case Destination1 of
-		#{transport := tls} ->
-			Destination1#{tls_opts => ensure_alpn(
-				maps:get(protocols, Destination1, [http]),
-				maps:get(tls_opts, Destination1, []))};
-		_ ->
-			Destination1
-	end,
-	ProtoState2 = Protocol:connect(ProtoState, StreamRef, ReplyTo, Destination, Headers),
-	{keep_state, State#state{protocol_state=ProtoState2}};
-connected(cast, {cancel, ReplyTo, StreamRef},
-		State=#state{protocol=Protocol, protocol_state=ProtoState}) ->
-	ProtoState2 = Protocol:cancel(ProtoState, StreamRef, ReplyTo),
-	{keep_state, State#state{protocol_state=ProtoState2}};
-%% Public Websocket interface.
+    {data, ReplyTo, StreamRef, IsFin, Data} ->
+      ProtoState2 = Protocol:data(ProtoState,
+        StreamRef, ReplyTo, IsFin, Data),
+      loop(State#state{protocol_state = ProtoState2});
+    {connect, ReplyTo, StreamRef, Destination0, Headers} ->
+      %% The protocol option has been deprecated in favor of the protocols option.
+      %% Nobody probably ended up using it, but let's not break the interface.
+      Destination1 = case Destination0 of
+                       #{protocols := _} ->
+                         Destination0;
+                       #{protocol := DestProto} ->
+                         Destination0#{protocols => [DestProto]};
+                       _ ->
+                         Destination0
+                     end,
+      Destination = case Destination1 of
+                      #{transport := tls} ->
+                        Destination1#{tls_opts => ensure_alpn(
+                          maps:get(protocols, Destination1, [http]),
+                          maps:get(tls_opts, Destination1, []))};
+                      _ ->
+                        Destination1
+                    end,
+      ProtoState2 = Protocol:connect(ProtoState, StreamRef, ReplyTo, Destination, Headers),
+      loop(State#state{protocol_state = ProtoState2});
+    {cancel, ReplyTo, StreamRef} ->
+      ProtoState2 = Protocol:cancel(ProtoState, StreamRef, ReplyTo),
+      loop(State#state{protocol_state = ProtoState2});
 %% @todo Maybe make an interface in the protocol module instead of checking on protocol name.
 %% An interface would also make sure that HTTP/1.0 can't upgrade.
-connected(cast, {ws_upgrade, Owner, StreamRef, Path, Headers},
-		State=#state{owner=Owner, origin_host=Host, origin_port=Port, opts=Opts,
-			protocol=Protocol, protocol_state=ProtoState})
-		when Protocol =:= gun_http ->
-	WsOpts = maps:get(ws_opts, Opts, #{}),
-	ProtoState2 = Protocol:ws_upgrade(ProtoState, StreamRef, Host, Port, Path, Headers, WsOpts),
-	{keep_state, State#state{protocol_state=ProtoState2}};
-connected(cast, {ws_upgrade, Owner, StreamRef, Path, Headers, WsOpts},
-		State=#state{owner=Owner, origin_host=Host, origin_port=Port,
-			protocol=Protocol, protocol_state=ProtoState})
-		when Protocol =:= gun_http ->
-	ProtoState2 = Protocol:ws_upgrade(ProtoState, StreamRef, Host, Port, Path, Headers, WsOpts),
-	{keep_state, State#state{protocol_state=ProtoState2}};
-	%% @todo can fail if http/1.0
-%% @todo Probably don't error out here, have a protocol function/command.
-connected(cast, {ws_upgrade, ReplyTo, StreamRef, _, _}, _) ->
-	ReplyTo ! {gun_error, self(), StreamRef, {badstate,
-		"Websocket is only supported over HTTP/1.1."}},
-	keep_state_and_data;
-connected(cast, {ws_upgrade, ReplyTo, StreamRef, _, _, _}, _) ->
-	ReplyTo ! {gun_error, self(), StreamRef, {badstate,
-		"Websocket is only supported over HTTP/1.1."}},
-	keep_state_and_data;
-connected(cast, {ws_send, Owner, Frame},
-		State=#state{owner=Owner, protocol=Protocol=gun_ws, protocol_state=ProtoState}) ->
-	commands(Protocol:send(Frame, ProtoState), State);
-connected(cast, {ws_send, ReplyTo, _}, _) ->
-	ReplyTo ! {gun_error, self(), {badstate,
-		"Connection needs to be upgraded to Websocket "
-		"before the gun:ws_send/1 function can be used."}},
-	keep_state_and_data;
-connected({call, From}, {stream_info, StreamRef},
-		#state{protocol=Protocol, protocol_state=ProtoState}) ->
-	{keep_state_and_data, {reply, From, Protocol:stream_info(ProtoState, StreamRef)}};
-connected(Type, Event, State) ->
-	handle_common(Type, Event, ?FUNCTION_NAME, State).
-
-%% Common events.
-handle_common(cast, {shutdown, Owner}, _, #state{owner=Owner, socket_t=SocketT, proxy_handle = ProxyHandle}) ->
-	case SocketT of
-		undefined -> ok;
-		_ -> ProxyHandle:close(SocketT)
-	end,
-	stop;
-%% We stop when the owner is gone.
-handle_common(info, {'DOWN', OwnerRef, process, Owner, Reason}, _, #state{owner=Owner, owner_ref=OwnerRef} = StateData) ->
-	close_all(StateData),
-	owner_gone(Reason);
-handle_common({call, From}, _, _, _) ->
-	{keep_state_and_data, {reply, From, {error, bad_call}}};
+    {ws_upgrade, Owner, StreamRef, Path, Headers} when Protocol =:= gun_http ->
+      WsOpts = maps:get(ws_opts, Opts, #{}),
+      ProtoState2 = Protocol:ws_upgrade(ProtoState, StreamRef, Host, Port, Path, Headers, WsOpts),
+      loop(State#state{protocol_state = ProtoState2});
+    {ws_upgrade, Owner, StreamRef, Path, Headers, WsOpts} when Protocol =:= gun_http ->
+      ProtoState2 = Protocol:ws_upgrade(ProtoState, StreamRef, Host, Port, Path, Headers, WsOpts),
+      loop(State#state{protocol_state = ProtoState2});
+  %% @todo can fail if http/1.0
+    {shutdown, Owner} ->
+      %% @todo Protocol:shutdown?
+      ok;
+    {'DOWN', OwnerRef, process, Owner, Reason} ->
+      Protocol:close(ProtoState),
+      Transport:close(Socket),
+      owner_gone(Reason);
+    {system, From, Request} ->
+      sys:handle_system_msg(Request, From, Parent, ?MODULE, [],
+        {loop, State});
+    {ws_upgrade, _, StreamRef, _, _} ->
+      Owner ! {gun_error, self(), StreamRef, {badstate,
+        "Websocket is only supported over HTTP/1.1."}},
+      loop(State);
+    {ws_upgrade, _, StreamRef, _, _, _} ->
+      Owner ! {gun_error, self(), StreamRef, {badstate,
+        "Websocket is only supported over HTTP/1.1."}},
+      loop(State);
+    {ws_send, _, _} ->
+      Owner ! {gun_error, self(), {badstate,
+        "Connection needs to be upgraded to Websocket "
+        "before the gun:ws_send/1 function can be used."}},
+      loop(State);
 %% @todo The ReplyTo patch disabled the notowner behavior.
 %% We need to add an option to enforce this behavior if needed.
-handle_common(info, {timeout, _TRef,{cow_http2_machine, _}}, connected, StateData) ->
-	close_all(StateData),
-	owner_gone({shutdown, timeout});
+    Any when is_tuple(Any), is_pid(element(2, Any)) ->
+      element(2, Any) ! {gun_error, self(), {notowner,
+        "Operations are restricted to the owner of the connection."}},
+      loop(State);
+    Any ->
+      error_logger:error_msg("Unexpected message: ~w~n", [Any]),
+      loop(State)
+  end.
 
-handle_common(cast, Any, _, #state{owner=Owner}) when element(2, Any) =/= Owner ->
-	element(2, Any) ! {gun_error, self(), {notowner,
-		"Operations are restricted to the owner of the connection."}},
-	keep_state_and_data;
-handle_common(Type, Event, StateName, StateData) ->
-	error_logger:error_msg("Unexpected event in state ~p of type ~p:~n~w~n~p~n",
-		[StateName, Type, Event, StateData]),
-	keep_state_and_data.
-
-close_all(#state{socket_t = SocketT, proxy_handle = ProxyHandle, protocol=Protocol, protocol_state=ProtoState}) ->
-	_ = case Protocol of
-		undefined -> ok;
-		_ -> Protocol:close(owner_gone, ProtoState)
-	end,
-	_ = case SocketT of
-		undefined -> ok;
-		_ -> ProxyHandle:close(SocketT)
-	end.
-
-commands(Command, State) when not is_list(Command) ->
-	commands([Command], State);
 commands([], State) ->
-	{keep_state, State};
-commands([close|_], State) ->
-	disconnect(State, close);
-commands([Error={error, _}|_], State) ->
-	disconnect(State, Error);
-commands([{state, ProtoState}|Tail], State) ->
-	commands(Tail, State#state{protocol_state=ProtoState});
+  loop(State);
+commands([close | _], State = #state{socket = Socket, transport = Transport}) ->
+  Transport:close(Socket),
+  down(State, normal);
+commands([Error = {error, _} | _], State = #state{socket = Socket, transport = Transport}) ->
+  Transport:close(Socket),
+  down(State, Error);
+commands([{state, ProtoState} | Tail], State) ->
+  commands(Tail, State#state{protocol_state = ProtoState});
 %% @todo The scheme should probably not be ignored.
 %%
 %% Order is important: the origin must be changed before
 %% the transport and/or protocol in order to keep track
 %% of the intermediaries properly.
-commands([{origin, _Scheme, Host, Port, Type}|Tail],
-		State=#state{proxy_handle = ProxyHandle, protocol=Protocol,
-			origin_host=IntermediateHost, origin_port=IntermediatePort,
-			intermediaries=Intermediaries}) ->
-	Info = #{
-		type => Type,
-		host => IntermediateHost,
-		port => IntermediatePort,
-		transport => ProxyHandle:name(),
-		protocol => Protocol:name()
-	},
-	commands(Tail, State#state{origin_host=Host, origin_port=Port,
-		intermediaries=[Info|Intermediaries]});
-commands([{switch_transport, Transport, Socket}|Tail], State) ->
-	commands(Tail, active(State#state{socket=Socket, transport=Transport,
-		messages=Transport:messages()}));
+commands([{origin, _Scheme, Host, Port, Type} | Tail],
+    State = #state{transport = Transport, protocol = Protocol,
+      origin_host = IntermediateHost, origin_port = IntermediatePort,
+      intermediaries = Intermediaries}) ->
+  Info = #{
+    type => Type,
+    host => IntermediateHost,
+    port => IntermediatePort,
+    transport => Transport:name(),
+    protocol => Protocol:name()
+  },
+  commands(Tail, State#state{origin_host = Host, origin_port = Port,
+    intermediaries = [Info | Intermediaries]});
+commands([{switch_transport, Transport, Socket} | Tail], State) ->
+  commands(Tail, State#state{socket = Socket, transport = Transport});
 %% @todo The two loops should be reunified and this clause generalized.
-commands([{switch_protocol, Protocol=gun_ws, ProtoState}], State) ->
-	{keep_state, keepalive_cancel(State#state{protocol=Protocol, protocol_state=ProtoState})};
+commands([{switch_protocol, Protocol = gun_ws, ProtoState}], State) ->
+  ws_loop(State#state{protocol = Protocol, protocol_state = ProtoState});
 %% @todo And this state should probably not be ignored.
-commands([{switch_protocol, Protocol, _ProtoState0}|Tail],
-		State=#state{owner=Owner, opts=Opts, socket=Socket, transport=Transport}) ->
-	ProtoOpts = maps:get(http2_opts, Opts, #{}),
-	ProtoState = Protocol:init(Owner, Socket, Transport, ProtoOpts),
-	commands(Tail, keepalive_timeout(State#state{protocol=Protocol, protocol_state=ProtoState})).
+commands([{switch_protocol, Protocol, _ProtoState0} | Tail],
+    State = #state{owner = Owner, opts = Opts, socket = Socket, transport = Transport}) ->
+  ProtoOpts = maps:get(http2_opts, Opts, #{}),
+  ProtoState = Protocol:init(Owner, Socket, Transport, ProtoOpts),
+  commands(Tail, State#state{protocol = Protocol, protocol_state = ProtoState}).
 
-disconnect(State=#state{owner=Owner, opts=Opts,
-		socket_t = SocketT, proxy_handle = ProxyHandle,
-		protocol=Protocol, protocol_state=ProtoState}, Reason) ->
-	Protocol:close(Reason, ProtoState),
-	%% @todo Need a special state for orderly shutdown of a connection.
-	ProxyHandle:close(SocketT),
-	%% We closed the socket, discard any remaining socket events.
-	disconnect_flush(State),
-	%% @todo Stop keepalive timeout, flush message.
-	{KilledStreams, UnprocessedStreams} = Protocol:down(ProtoState),
-	%% @todo need to review reason close for finish request with connection: close
-	Retry = if
-		Reason == close -> 0;
-		true -> maps:get(retry, Opts, 5)
-	end,
-	Owner ! {gun_down, self(), Protocol:name(), Reason, Retry, KilledStreams, UnprocessedStreams},
-	case Retry of
-		0 ->
-			stop;
-		_ ->
-      % set timeout for waiting shutdown
-			{next_state, not_connected,
-				keepalive_cancel(State#state{socket=undefined,
-					protocol=undefined, protocol_state=undefined}),
-				{state_timeout, 500, {retries, Retry - 1}}}
-	end.
+ws_loop(State = #state{parent = Parent, owner = Owner, owner_ref = OwnerRef, socket = Socket,
+  transport = Transport, protocol = Protocol, protocol_state = ProtoState}) ->
+  {OK, Closed, Error} = Transport:messages(),
+  Transport:setopts(Socket, [{active, once}]),
+  receive
+    {OK, Socket, Data} ->
+      case Protocol:handle(Data, ProtoState) of
+        close ->
+          Transport:close(Socket),
+          down(State, normal);
+        ProtoState2 ->
+          ws_loop(State#state{protocol_state = ProtoState2})
+      end;
+    {Closed, Socket} ->
+      Transport:close(Socket),
+      down(State, closed);
+    {Error, Socket, Reason} ->
+      Transport:close(Socket),
+      down(State, {error, Reason});
+  %% Ignore any previous HTTP keep-alive.
+    keepalive ->
+      ws_loop(State);
+%		{ws_send, Owner, Frames} when is_list(Frames) ->
+%			todo; %% @todo
+    {ws_send, Owner, Frame} ->
+      case Protocol:send(Frame, ProtoState) of
+        close ->
+          Transport:close(Socket),
+          down(State, normal);
+        ProtoState2 ->
+          ws_loop(State#state{protocol_state = ProtoState2})
+      end;
+    {shutdown, Owner} ->
+      %% @todo Protocol:shutdown? %% @todo close frame
+      ok;
+    {'DOWN', OwnerRef, process, Owner, Reason} ->
+      Protocol:close(owner_gone, ProtoState),
+      Transport:close(Socket),
+      owner_gone(Reason);
+    {system, From, Request} ->
+      sys:handle_system_msg(Request, From, Parent, ?MODULE, [],
+        {ws_loop, State});
+    Any when is_tuple(Any), is_pid(element(2, Any)) ->
+      element(2, Any) ! {gun_error, self(), {notowner,
+        "Operations are restricted to the owner of the connection."}},
+      ws_loop(State);
+    Any ->
+      error_logger:error_msg("Unexpected message: ~w~n", [Any])
+  end.
 
-disconnect_flush(State=#state{socket=Socket, messages={OK, Closed, Error}}) ->
-	receive
-		{OK, Socket, _} -> disconnect_flush(State);
-		{Closed, Socket} -> disconnect_flush(State);
-		{Error, Socket, _} -> disconnect_flush(State)
-	after 0 ->
-		ok
-	end.
+-spec owner_gone(_) -> no_return().
+owner_gone(normal) -> exit(normal);
+owner_gone(shutdown) -> exit(shutdown);
+owner_gone(Shutdown = {shutdown, _}) -> exit(Shutdown);
+owner_gone(Reason) -> error({owner_gone, Reason}).
 
-active(State=#state{socket_t = SocketT, proxy_handle = ProxyHandle}) ->
-	ProxyHandle:setopts(SocketT, [{active, once}]),
-	State.
+system_continue(_, _, {retry_loop, State, Retry}) ->
+  retry_loop(State, Retry);
+system_continue(_, _, {loop, State}) ->
+  loop(State);
+system_continue(_, _, {ws_loop, State}) ->
+  ws_loop(State).
 
-keepalive_timeout(State=#state{opts=Opts, protocol=Protocol}) ->
-	{ProtoOptsKey, Default} = case Protocol of
-		gun_http -> {http_opts, 25000};
-		gun_http2 -> {http2_opts, 15000}
-	end,
-	ProtoOpts = maps:get(ProtoOptsKey, Opts, #{}),
-	Keepalive = maps:get(keepalive, ProtoOpts, Default),
-	KeepaliveRef = case Keepalive of
-		infinity -> undefined;
-		%% @todo Maybe change that to a start_timer.
-		_ -> erlang:send_after(Keepalive, self(), keepalive)
-	end,
-	State#state{keepalive_ref=KeepaliveRef}.
+-spec system_terminate(any(), _, _, _) -> no_return().
+system_terminate(Reason, _, _, _) ->
+  exit(Reason).
 
-keepalive_cancel(State=#state{keepalive_ref=undefined}) ->
-	State;
-keepalive_cancel(State=#state{keepalive_ref=KeepaliveRef}) ->
-	_ = erlang:cancel_timer(KeepaliveRef),
-	%% Flush if we have a keepalive message
-	receive
-		keepalive -> ok
-	after 0 ->
-		ok
-	end,
-	State#state{keepalive_ref=undefined}.
-
--spec owner_gone(_) -> stop | {stop, _}.
-owner_gone(normal) -> stop;
-owner_gone(shutdown) -> {stop, shutdown};
-owner_gone(Shutdown = {shutdown, _}) -> {stop, Shutdown};
-owner_gone(Reason) -> {stop, {owner_gone, Reason}}.
+system_code_change(Misc, _, _, _) ->
+  {ok, Misc}.
