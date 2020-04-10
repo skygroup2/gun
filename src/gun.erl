@@ -330,6 +330,7 @@ close(ServerPid) ->
 -spec shutdown(pid()) -> ok.
 shutdown(ServerPid) ->
   ServerPid ! {shutdown, self()},
+  gun_stats:stop_connection(ServerPid),
   ok.
 
 %% Requests.

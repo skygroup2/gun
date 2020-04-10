@@ -125,11 +125,23 @@ defmodule Gun do
     conn1 = Process.delete(ref)
     conn2 = if is_pid(conn1), do: conn1, else: conn
     Process.delete(conn2)
-    if is_pid(conn2) and Process.alive?(conn2) == true do
-      :gun.shutdown(conn2)
+    if is_pid(conn2) do
+      if Process.alive?(conn2), do: :gun.shutdown(conn2)
       :gun.flush(conn2)
+    else
+      :ok
     end
   end
 
+  def ping(ip) do
+    opts = Gun.default_option(20000, 10000)
+    Gun.http_request("GET", "http://#{ip}:22225/ping", %{"connection" => "close"}, "", opts, nil)
+    receive do
+      msg ->
+        IO.inspect msg
+    after
+      1000 -> :ok
+    end
+  end
 
 end
