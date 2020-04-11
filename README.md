@@ -16,6 +16,11 @@
 ### TODO
 
 * Add feature to determine traffic usage via callback function
-* Refactor test for ExUnit
+* [Refactor test for ExUnit](https://elixirforum.com/t/commoner-elixir-wrapper-for-common-test-library/23966/4)
 
 
+### Patch/Merge
+
+* Keep tracking upstream source code
+* Remove unused things : event_handler, socks, raw, tls_proxy
+* Support simpler proxy code from hackney
