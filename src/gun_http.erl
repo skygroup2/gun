@@ -244,11 +244,9 @@ handle(Data, State=#http_state{in={body, Length}, connection=Conn,
 			end
 	end.
 
-handle_head(Data, State0=#http_state{streams=[#stream{ref=StreamRef}|_],
-		commands_queue=Commands}) ->
+handle_head(Data, State=#http_state{streams=[#stream{ref=StreamRef}|_]}) ->
 	{Version, Status, _, Rest0} = cow_http:parse_status_line(Data),
 	{Headers, Rest} = cow_http:parse_headers(Rest0),
-	State = State0#http_state{commands_queue=[Commands]},
 	case StreamRef of
 		{connect, _, _} when Status >= 200, Status < 300 ->
 			handle_connect(Rest, State, Version, Status, Headers);

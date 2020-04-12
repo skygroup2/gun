@@ -282,14 +282,13 @@ data_frame(State0, StreamID, IsFin, Data) ->
 	end,
 	maybe_delete_stream(State, StreamID, remote, IsFin).
 
-headers_frame(State0=#http2_state{content_handlers=Handlers0, commands_queue=Commands},
+headers_frame(State=#http2_state{content_handlers=Handlers0},
 		StreamID, IsFin, Headers, #{status := Status}, _BodyLen) ->
-	Stream = get_stream_by_id(State0, StreamID),
+	Stream = get_stream_by_id(State, StreamID),
 	#stream{
 		ref=StreamRef,
 		reply_to=ReplyTo
 	} = Stream,
-	State = State0#http2_state{commands_queue=[Commands]},
 	if
 		Status >= 100, Status =< 199 ->
 			ReplyTo ! {gun_inform, self(), StreamRef, Status, Headers},
