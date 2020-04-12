@@ -1296,8 +1296,6 @@ disconnect_flush(State=#state{socket=Socket, messages={OK, Closed, Error}}) ->
 
 protocol_handler(http) -> gun_http;
 protocol_handler(http2) -> gun_http2;
-protocol_handler(raw) -> gun_raw;
-protocol_handler(socks) -> gun_socks;
 protocol_handler(ws) -> gun_ws.
 
 active(State=#state{active=false}) ->
