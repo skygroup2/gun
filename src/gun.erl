@@ -848,10 +848,10 @@ init({Owner, Host, Port, Opts}) ->
       {ProxyUser, ProxyPass} = get_proxy_auth(Opts),
       PO = [{connect_host, Host}, {connect_port, Port}, {connect_user, ProxyUser}, {connect_pass, ProxyPass}],
       return_http_proxy(Transport, PO, ProxyHost, ProxyPort);
-    {socks5, ProxyHost, ProxyPort} ->
+    {ProxyType, ProxyHost, ProxyPort} when ProxyType =:= socks5 orelse ProxyType =:= socks6 ->
       {ProxyUser, ProxyPass} = get_proxy_auth(Opts),
       ProxyResolve = maps:get(socks5_resolve, Opts, local),
-      PO = [{socks5_host, ProxyHost}, {socks5_port, ProxyPort}, {socks5_user, ProxyUser}, {socks5_pass, ProxyPass}, {socks5_resolve, ProxyResolve}],
+      PO = [{socks5_version, ProxyType}, {socks5_host, ProxyHost}, {socks5_port, ProxyPort}, {socks5_user, ProxyUser}, {socks5_pass, ProxyPass}, {socks5_resolve, ProxyResolve}],
       {gun_socks5_proxy, gun_socks5_proxy:name(), PO, Host, Port};
 	 	_ ->
       {gun_tcp, gun_tcp:name(), [], Host, Port}
