@@ -231,6 +231,7 @@
 	protocol_state :: any(),
 
 	proxy_connect :: module(),
+	proxy_name :: atom(),
 	proxy_opts :: opts()
 }).
 
@@ -836,28 +837,28 @@ init({Owner, Host, Port, Opts}) ->
 	end,
 	OwnerRef = monitor(process, Owner),
 
-	{ProxyConnect, ProxyOpts, Host1, Port1} = case maps:get(proxy, Opts, undefined) of
+	{ProxyConnect, ProxyName, ProxyOpts, Host1, Port1} = case maps:get(proxy, Opts, undefined) of
 	 	Url when is_binary(Url) orelse is_list(Url) ->
       Url1 = gun_url:parse_url(Url),
       #{host := ProxyHost, port := ProxyPort} = gun_url:normalize(Url1),
       {ProxyUser, ProxyPass} = get_proxy_auth(Opts),
       PO = [{connect_host, Host}, {connect_port, Port}, {connect_user, ProxyUser}, {connect_pass, ProxyPass}],
-      select_http_proxy(Transport, PO, ProxyHost, ProxyPort);
+      return_http_proxy(Transport, PO, ProxyHost, ProxyPort);
     {ProxyHost, ProxyPort} ->
       {ProxyUser, ProxyPass} = get_proxy_auth(Opts),
       PO = [{connect_host, Host}, {connect_port, Port}, {connect_user, ProxyUser}, {connect_pass, ProxyPass}],
-      select_http_proxy(Transport, PO, ProxyHost, ProxyPort);
+      return_http_proxy(Transport, PO, ProxyHost, ProxyPort);
     {connect, ProxyHost, ProxyPort} ->
       {ProxyUser, ProxyPass} = get_proxy_auth(Opts),
       PO = [{connect_host, Host}, {connect_port, Port}, {connect_user, ProxyUser}, {connect_pass, ProxyPass}],
-      select_http_proxy(Transport, PO, ProxyHost, ProxyPort);
+      return_http_proxy(Transport, PO, ProxyHost, ProxyPort);
     {socks5, ProxyHost, ProxyPort} ->
       {ProxyUser, ProxyPass} = get_proxy_auth(Opts),
       ProxyResolve = maps:get(socks5_resolve, Opts, local),
       PO = [{socks5_host, ProxyHost}, {socks5_port, ProxyPort}, {socks5_user, ProxyUser}, {socks5_pass, ProxyPass}, {socks5_resolve, ProxyResolve}],
-      {gun_socks5_proxy, PO, Host, Port};
+      {gun_socks5_proxy, gun_socks5_proxy:name(), PO, Host, Port};
 	 	_ ->
-      {gun_tcp, [], Host, Port}
+      {gun_tcp, gun_tcp:name(), [], Host, Port}
  	end,
 	gun_stats:update_counter(active_connection, 1),
 	gun_stats:update_counter(total_connection, 1),
@@ -867,7 +868,7 @@ init({Owner, Host, Port, Opts}) ->
 		host=Host1, port=Port1, origin_scheme=OriginScheme,
 		origin_host=Host, origin_port=Port, opts=Opts,
 		transport=Transport, messages=Transport:messages(),
-		proxy_connect = ProxyConnect, proxy_opts = ProxyOpts
+		proxy_connect = ProxyConnect, proxy_name = ProxyName, proxy_opts = ProxyOpts
 	},
 	{ok, not_connected, State,
 		[{selective, fun selective_loop_receive/1}, {next_event, internal, {retries, max(Retry, 1), connect}}]}.
@@ -1033,16 +1034,14 @@ connected(cast, {headers, ReplyTo, StreamRef, Method, Path, Headers, InitialFlow
 connected(cast, {request, ReplyTo, StreamRef, Method, Path, Headers, Body, InitialFlow},
 		State=#state{origin_host=Host, origin_port=Port,
 			protocol=Protocol, protocol_state=ProtoState,
-			transport = Transport, opts = Opts, proxy_connect = ProxyConnect}) ->
-	{Path1, Headers1} = format_path_headers(Transport, ProxyConnect, Host, Port, Path, Headers, Opts),
+			transport = Transport, opts = Opts, proxy_name = ProxyName}) ->
+	{Path1, Headers1} = format_path_headers(Transport, ProxyName, Host, Port, Path, Headers, Opts),
 	ProtoState2 = Protocol:request(ProtoState,
 		StreamRef, ReplyTo, Method, Host, Port, Path1, Headers1, Body,
 		InitialFlow),
 	{keep_state, State#state{protocol_state=ProtoState2}};
-connected(cast, {connect, ReplyTo, StreamRef, Destination, Headers, InitialFlow},
-		State=#state{protocol=Protocol, protocol_state=ProtoState}) ->
-	ProtoState2 = Protocol:connect(ProtoState, StreamRef, ReplyTo, Destination, Headers, InitialFlow),
-	{keep_state, State#state{protocol_state=ProtoState2}};
+%% Removed
+
 %% Public Websocket interface.
 %% @todo Maybe make an interface in the protocol module instead of checking on protocol name.
 %% An interface would also make sure that HTTP/1.0 can't upgrade.
@@ -1368,17 +1367,17 @@ selective_loop_receive(HibernateAfterTimeout) ->
 
 
 get_proxy_auth(Opts) ->
-	case maps:get(proxy_auth, Opts) of
+	case maps:get(proxy_auth, Opts, nil) of
 		{U, P} -> {U, P};
 		_ -> {undefined, undefined}
 	end.
 
-select_http_proxy(gun_tcp, _ProxyOpts, ProxyHost, ProxyPort) -> {gun_tcp, [], ProxyHost, ProxyPort};
-select_http_proxy(_, ProxyOpts, ProxyHost, ProxyPort) -> {gun_http_proxy, ProxyOpts, ProxyHost, ProxyPort}.
+return_http_proxy(gun_tcp, _ProxyOpts, ProxyHost, ProxyPort) -> {gun_tcp, gun_http_proxy:name(), [], ProxyHost, ProxyPort};
+return_http_proxy(_, ProxyOpts, ProxyHost, ProxyPort) -> {gun_http_proxy, gun_http_proxy:name(), ProxyOpts, ProxyHost, ProxyPort}.
 
-format_path_headers(Transport, ProxyConnect, OriginHost, OriginPort, Path, Headers, Opts) ->
+format_path_headers(Transport, ProxyName, OriginHost, OriginPort, Path, Headers, Opts) ->
 	case maps:get(proxy_auth, Opts, undefined) of
-		{U, P} when Transport == gun_tcp andalso ProxyConnect == gun_http_proxy ->
+		{U, P} when Transport == gun_tcp andalso ProxyName == http_proxy ->
 			{add_host_to_path(OriginHost, OriginPort, Path), add_proxy_authorization(U, P, Headers)};
 		_ ->
 			{Path, Headers}
