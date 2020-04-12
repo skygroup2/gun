@@ -13,7 +13,7 @@
 %% OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 -module(gun).
--behavior(gen_statem).
+-behavior(gen_statem2).
 
 -ifdef(OTP_RELEASE).
 -compile({nowarn_deprecated_function, [{erlang, get_stacktrace, 0}]}).
@@ -117,16 +117,10 @@
 
 -type opts() :: #{
 	connect_timeout => timeout(),
-	cookie_ignore_informational => boolean(),
-	cookie_store => gun_cookies:store(),
-	domain_lookup_timeout => timeout(),
-	event_handler => {module(), any()},
 	http_opts => http_opts(),
 	http2_opts => http2_opts(),
 	protocols => protocols(),
 	retry => non_neg_integer(),
-	retry_fun => fun((non_neg_integer(), opts())
-		-> #{retries => non_neg_integer(), timeout => pos_integer()}),
 	retry_timeout => pos_integer(),
 	socks_opts => socks_opts(),
 	supervise => boolean(),
@@ -139,24 +133,12 @@
 }.
 -export_type([opts/0]).
 
--type connect_destination() :: #{
-	host := inet:hostname() | inet:ip_address(),
-	port := inet:port_number(),
-	username => iodata(),
-	password => iodata(),
-	protocols => protocols(),
-	transport => tcp | tls,
-	tls_opts => [ssl:tls_client_option()],
-	tls_handshake_timeout => timeout()
-}.
--export_type([connect_destination/0]).
-
 -type intermediary() :: #{
 	type := connect | socks5,
 	host := inet:hostname() | inet:ip_address(),
 	port := inet:port_number(),
-	transport := tcp | tls | tls_proxy,
-	protocol := http | http2 | raw | socks
+	transport := tcp | tls,
+	protocol := http | http2
 }.
 
 -type raw_opts() :: #{}.
@@ -324,8 +306,7 @@ check_options([Opt = {protocols, L}|Opts]) when is_list(L) ->
 	end;
 check_options([{retry, R}|Opts]) when is_integer(R), R >= 0 ->
 	check_options(Opts);
-check_options([{retry_fun, F}|Opts]) when is_function(F, 2) ->
-	check_options(Opts);
+%% Remove
 check_options([{retry_timeout, T}|Opts]) when is_integer(T), T >= 0 ->
 	check_options(Opts);
 %% Removed
@@ -388,7 +369,7 @@ consider_tracing(_, _) ->
 
 -spec set_owner(pid(), pid()) -> ok.
 set_owner(ServerPid, NewOwnerPid) ->
-	gen_statem:cast(ServerPid, {set_owner, self(), NewOwnerPid}).
+	gen_statem2:cast(ServerPid, {set_owner, self(), NewOwnerPid}).
 
 -spec info(pid()) -> map().
 info(ServerPid) ->
@@ -452,7 +433,7 @@ close(ServerPid) ->
 
 -spec shutdown(pid()) -> ok.
 shutdown(ServerPid) ->
-	gen_statem:cast(ServerPid, shutdown).
+	gen_statem2:cast(ServerPid, shutdown).
 
 %% Requests.
 
@@ -559,7 +540,7 @@ headers(ServerPid, Method, Path, Headers, ReqOpts) ->
 	StreamRef = make_ref(),
 	InitialFlow = maps:get(flow, ReqOpts, infinity),
 	ReplyTo = maps:get(reply_to, ReqOpts, self()),
-	gen_statem:cast(ServerPid, {headers, ReplyTo, StreamRef,
+	gen_statem2:cast(ServerPid, {headers, ReplyTo, StreamRef,
 		Method, Path, normalize_headers(Headers), InitialFlow}),
 	StreamRef.
 
@@ -572,7 +553,7 @@ request(ServerPid, Method, Path, Headers, Body, ReqOpts) ->
 	StreamRef = make_ref(),
 	InitialFlow = maps:get(flow, ReqOpts, infinity),
 	ReplyTo = maps:get(reply_to, ReqOpts, self()),
-	gen_statem:cast(ServerPid, {request, ReplyTo, StreamRef,
+	gen_statem2:cast(ServerPid, {request, ReplyTo, StreamRef,
 		Method, Path, normalize_headers(Headers), Body, InitialFlow}),
 	StreamRef.
 
@@ -595,7 +576,7 @@ data(ServerPid, StreamRef, IsFin, Data) ->
 		0 when IsFin =:= nofin ->
 			ok;
 		_ ->
-			gen_statem:cast(ServerPid, {data, self(), StreamRef, IsFin, Data})
+			gen_statem2:cast(ServerPid, {data, self(), StreamRef, IsFin, Data})
 	end.
 
 %% Awaiting gun messages.
@@ -798,19 +779,19 @@ flush_ref(StreamRef) ->
 
 -spec update_flow(pid(), reference(), pos_integer()) -> ok.
 update_flow(ServerPid, StreamRef, Flow) ->
-	gen_statem:cast(ServerPid, {update_flow, self(), StreamRef, Flow}).
+	gen_statem2:cast(ServerPid, {update_flow, self(), StreamRef, Flow}).
 
 %% Cancelling a stream.
 
 -spec cancel(pid(), reference()) -> ok.
 cancel(ServerPid, StreamRef) ->
-	gen_statem:cast(ServerPid, {cancel, self(), StreamRef}).
+	gen_statem2:cast(ServerPid, {cancel, self(), StreamRef}).
 
 %% Information about a stream.
 
 -spec stream_info(pid(), reference()) -> {ok, map() | undefined} | {error, not_connected}.
 stream_info(ServerPid, StreamRef) ->
-	gen_statem:call(ServerPid, {stream_info, StreamRef}).
+	gen_statem2:call(ServerPid, {stream_info, StreamRef}).
 
 %% Websocket.
 
@@ -821,7 +802,7 @@ ws_upgrade(ServerPid, Path) ->
 -spec ws_upgrade(pid(), iodata(), req_headers()) -> reference().
 ws_upgrade(ServerPid, Path, Headers) ->
 	StreamRef = make_ref(),
-	gen_statem:cast(ServerPid, {ws_upgrade, self(), StreamRef, Path, Headers}),
+	gen_statem2:cast(ServerPid, {ws_upgrade, self(), StreamRef, Path, Headers}),
 	StreamRef.
 
 -spec ws_upgrade(pid(), iodata(), req_headers(), ws_opts()) -> reference().
@@ -829,21 +810,21 @@ ws_upgrade(ServerPid, Path, Headers, Opts) ->
 	ok = gun_ws:check_options(Opts),
 	StreamRef = make_ref(),
 	ReplyTo = maps:get(reply_to, Opts, self()),
-	gen_statem:cast(ServerPid, {ws_upgrade, ReplyTo, StreamRef, Path, Headers, Opts}),
+	gen_statem2:cast(ServerPid, {ws_upgrade, ReplyTo, StreamRef, Path, Headers, Opts}),
 	StreamRef.
 
 %% @todo ws_send/2 will need to be deprecated in favor of a variant with StreamRef.
 %% But it can be kept for the time being since it can still work for HTTP/1.1.
 -spec ws_send(pid(), ws_frame() | [ws_frame()]) -> ok.
 ws_send(ServerPid, Frames) ->
-	gen_statem:cast(ServerPid, {ws_send, self(), Frames}).
+	gen_statem2:cast(ServerPid, {ws_send, self(), Frames}).
 
 %% Internals.
 
 callback_mode() -> state_functions.
 
 start_link(Owner, Host, Port, Opts) ->
-	gen_statem:start_link(?MODULE, {Owner, Host, Port, Opts}, []).
+	gen_statem2:start_link(?MODULE, {Owner, Host, Port, Opts}, []).
 
 init({Owner, Host, Port, Opts}) ->
 	Retry = maps:get(retry, Opts, 0),
