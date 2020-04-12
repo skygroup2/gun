@@ -39,12 +39,12 @@ do_handshake(Socket, Host, Port, Options, Timeout) ->
   case ProxyUser of
     undefined ->
       %% no auth
-      ok = gen_tcp:send(Socket, << 5, 1, 0 >>),
-      case gen_tcp:recv(Socket, 2, Timeout) of
-        {ok, << 5, 0 >>} ->
+      ok = gen_tcp:send(Socket, gun_socks5_msg:encode(c, #{type => auth, method => 0})),
+      case recv_msg(Socket, gun_socks5_msg:recv_size(auth_resp), Timeout, <<>>) of
+        #{type := auth_resp, method := 0} ->
           do_connection(Socket, Host, Port, Options, Timeout);
-        {ok, _Reply} ->
-          {error, unknown_reply};
+        #{} = Reply ->
+          {error, {proxy_error, Reply}};
         Error ->
           Error
       end;
@@ -58,27 +58,22 @@ do_handshake(Socket, Host, Port, Options, Timeout) ->
   end.
 
 do_authentication(Socket, User, Pass, Timeout) ->
-  ok = gen_tcp:send(Socket, << 5, 1, 2 >>),
-  case gen_tcp:recv(Socket, 2, Timeout) of
-    {ok, <<5, 0>>} ->
+  ok = gen_tcp:send(Socket, gun_socks5_msg:encode(c, #{type => auth, method => 2})),
+  case recv_msg(Socket, gun_socks5_msg:recv_size(auth_resp), Timeout, <<>>) of
+    #{type := auth_resp, method := 0} ->
       ok;
-    {ok, <<5, 2>>} ->
-      UserLength = byte_size(User),
-      PassLength = byte_size(Pass),
-      Msg = iolist_to_binary([<< 1, UserLength >>,
-        User, << PassLength >>,
-        Pass]),
-      ok = gen_tcp:send(Socket, Msg),
-      case gen_tcp:recv(Socket, 2, Timeout) of
-        {ok, <<1, 0>>} ->
+    #{type := auth_resp, method := 2} ->
+      ok = gen_tcp:send(Socket, gun_socks5_msg:encode(c, #{type => auth_data, user => User, password => Pass})),
+      case recv_msg(Socket, gun_socks5_msg:recv_size(auth_status), Timeout, <<>>) of
+        #{type := auth_status, status := 0} ->
           ok;
-        {ok, _} ->
-          {error, not_authenticated};
+        #{type := auth_status, status := Status} ->
+          {error, {proxy_error, Status}};
         {error, Reason} ->
           {error, Reason}
       end;
-    {ok, _} ->
-      {error, not_authenticated};
+    #{} = Reply ->
+      {error, {proxy_error, Reply}};
     {error, Reason} ->
       {error, Reason}
   end.
@@ -86,67 +81,56 @@ do_authentication(Socket, User, Pass, Timeout) ->
 
 do_connection(Socket, Host, Port, Options, Timeout) ->
   Resolve = proplists:get_value(socks5_resolve, Options, remote),
-  case addr(Host, Port, Resolve) of
-    Addr when is_binary(Addr) ->
-      ok = gen_tcp:send(Socket, << 5, 1, 0, Addr/binary >>),
-      case gen_tcp:recv(Socket, 4, Timeout) of
-        {ok, << 5, 0, 0, AType>>} ->
-          BoundAddr = recv_addr_port(AType, gen_tcp, Socket, Timeout),
-          check_connection(BoundAddr);
-        {ok, _} ->
-          {error, badarg};
+  case resolve_addr(Host, Resolve) of
+    {error, Reason} ->
+      {error, Reason};
+    Addr ->
+      ok = gen_tcp:send(Socket, gun_socks5_msg:encode(c, #{type => connect, host => Addr, port => Port})),
+      case recv_msg(Socket, gun_socks5_msg:recv_size(reply), Timeout, <<>>) of
+        #{type := reply} ->
+          ok;
+        #{} = Reply ->
+          {error, {proxy_error, Reply}};
         Error ->
           Error
-      end;
-    Error ->
-      Error
+      end
   end.
 
-addr(Host, Port, Resolve) ->
+resolve_addr(Host, Resolve) ->
   case inet_parse:address(Host) of
     {ok, {IP1, IP2, IP3, IP4}} ->
-      << 1, IP1, IP2, IP3, IP4, Port:16 >>;
+      {IP1, IP2, IP3, IP4};
     {ok, {IP1, IP2, IP3, IP4, IP5, IP6, IP7, IP8}} ->
-      << 4, IP1, IP2, IP3, IP4, IP5, IP6, IP7, IP8, Port:16 >>;
-    _ -> %% domain name
+      {IP1, IP2, IP3, IP4, IP5, IP6, IP7, IP8};
+    {error, _} -> %% domain name
       case Resolve of
         local ->
           case inet:getaddr(Host, inet) of
             {ok, {IP1, IP2, IP3, IP4}} ->
-              << 1, IP1, IP2, IP3, IP4, Port:16 >>;
+              {IP1, IP2, IP3, IP4};
             Error ->
               case inet:getaddr(Host, inet6) of
                 {ok, {IP1, IP2, IP3, IP4, IP5, IP6, IP7, IP8}} ->
-                  << 4, IP1, IP2, IP3, IP4, IP5, IP6, IP7, IP8, Port:16 >>;
+                  {IP1, IP2, IP3, IP4, IP5, IP6, IP7, IP8};
                 _ ->
                   Error
               end
           end;
         _Remote ->
-          Host1 = list_to_binary(Host),
-          HostLength = byte_size(Host1),
-          << 3, HostLength, Host1/binary, Port:16 >>
+          list_to_binary(Host)
       end
   end.
 
-recv_addr_port(1 = AType, Transport, Socket, Timeout) -> % IPv4
-   {ok, Data} = Transport:recv(Socket, 6, Timeout),
-   <<AType, Data/binary>>;
-recv_addr_port(4 = AType, Transport, Socket, Timeout) -> % IPv6
-   {ok, Data} = Transport:recv(Socket, 18, Timeout),
-   <<AType, Data/binary>>;
-recv_addr_port(3 = AType, Transport, Socket, Timeout) -> % Domain
-   {ok, <<DLen/integer>>} = Transport:recv(Socket, 1, Timeout),
-   {ok, AddrPort} = Transport:recv(Socket, DLen + 2, Timeout),
-   <<AType, DLen, AddrPort/binary>>;
-recv_addr_port(_, _, _, _) ->
-   error.
-
-check_connection(<< 3, _DomainLen:8, _Domain/binary >>) ->
-  ok;
-check_connection(<< 1, _Addr:32, _Port:16 >>) ->
-  ok;
-check_connection(<< 4, _Addr:128, _Port:16 >>) ->
-  ok;
-check_connection(_) ->
-  {error, no_connection}.
+recv_msg(Socket, Length, Timeout, Buf) ->
+  case gen_tcp:recv(Socket, Length, Timeout) of
+    {ok, NewBin} ->
+      NewBuf = <<Buf/binary, NewBin/binary>>,
+      case gun_socks5_msg:decode(c, NewBuf) of
+        {more, MoreLen} ->
+          recv_msg(Socket, MoreLen, Timeout, NewBuf);
+        Msg ->
+          Msg
+      end;
+    {error, Reason} ->
+      {error, Reason}
+  end.

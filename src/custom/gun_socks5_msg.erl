@@ -3,7 +3,6 @@
 
 %% API
 -export([
-  recv_msg/4,
   encode/2,
   decode/2,
   recv_size/1
@@ -19,6 +18,7 @@
 %%  03 : UDP ASSOCIATE
 
 recv_size(connect) -> 4;
+recv_size(reply) -> 4;
 recv_size(auth_status) -> 2;
 recv_size(auth_data) -> 3;
 recv_size(auth) -> 3;
@@ -38,6 +38,9 @@ encode(c, #{type := auth, method := Method}) ->
   end,
   MethodSize = byte_size(MethodBin),
   <<5, MethodSize, MethodBin/binary>>;
+encode(s, #{type := reply, reply := Rep, reserve := Rev, host := Host, port := Port}) ->
+  AddrBin = encode_addr(Host, Port),
+  <<5, Rep, Rev, AddrBin/binary>>;
 encode(s, #{type := auth_status, status := Status}) ->
   <<1, Status>>;
 encode(s, #{type := auth_resp, method := Method}) ->
@@ -48,6 +51,13 @@ decode(s, <<5, 1, 0, AType, AddrBin/binary>>) ->
   case decode_addr(AType, AddrBin) of
     {ok, Host, Port} ->
       #{type => connect, host => Host, port => Port};
+    Error ->
+      Error
+  end;
+decode(c, <<5, Rep, Rev, AType, AddrBin/binary>>) ->
+  case decode_addr(AType, AddrBin) of
+    {ok, Host, Port} ->
+      #{type => reply, reply => Rep, reserve => Rev, host => Host, port => Port};
     Error ->
       Error
   end;
@@ -63,7 +73,8 @@ decode(c, <<1, Status>>) ->
   #{type => auth_status, status => Status};
 decode(c, <<5, Method>>) ->
   #{type => auth_resp, method => Method};
-decode(_, _) -> {error, badarg}.
+decode(_, _) ->
+  {error, badarg}.
 
 
 encode_addr({IP1, IP2, IP3, IP4}, Port) ->
@@ -89,17 +100,5 @@ decode_addr(4, SmallBin) when byte_size(SmallBin) < 18 ->
 decode_addr(3, <<HL, SmallBin/binary>>) when byte_size(SmallBin) < HL + 2 ->
   {more, HL + 2 - byte_size(SmallBin)};
 decode_addr(_AType, _) -> {error, badarg}.
-
-recv_msg(Socket, Length, Timeout, Buf) ->
-  case gen_tcp:recv(Socket, Length, Timeout) of
-    {ok, NewBin} ->
-      <<Buf/binary, NewBin/binary>>;
-    {more, MoreLen} ->
-      {more, MoreLen};
-    {error, timeout} ->
-      Buf;
-    {error, Reason} ->
-      {error, Reason}
-  end.
 
 
