@@ -13,7 +13,7 @@
 %% OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 -module(gun).
--behavior(gen_statem).
+-behavior(gen_statem2).
 
 -ifdef(OTP_RELEASE).
 -compile({nowarn_deprecated_function, [{erlang, get_stacktrace, 0}]}).
@@ -117,16 +117,10 @@
 
 -type opts() :: #{
 	connect_timeout => timeout(),
-	cookie_ignore_informational => boolean(),
-	cookie_store => gun_cookies:store(),
-	domain_lookup_timeout => timeout(),
-	event_handler => {module(), any()},
 	http_opts => http_opts(),
 	http2_opts => http2_opts(),
 	protocols => protocols(),
 	retry => non_neg_integer(),
-	retry_fun => fun((non_neg_integer(), opts())
-		-> #{retries => non_neg_integer(), timeout => pos_integer()}),
 	retry_timeout => pos_integer(),
 	socks_opts => socks_opts(),
 	supervise => boolean(),
@@ -139,24 +133,12 @@
 }.
 -export_type([opts/0]).
 
--type connect_destination() :: #{
-	host := inet:hostname() | inet:ip_address(),
-	port := inet:port_number(),
-	username => iodata(),
-	password => iodata(),
-	protocols => protocols(),
-	transport => tcp | tls,
-	tls_opts => [ssl:tls_client_option()],
-	tls_handshake_timeout => timeout()
-}.
--export_type([connect_destination/0]).
-
 -type intermediary() :: #{
 	type := connect | socks5,
 	host := inet:hostname() | inet:ip_address(),
 	port := inet:port_number(),
-	transport := tcp | tls | tls_proxy,
-	protocol := http | http2 | raw | socks
+	transport := tcp | tls,
+	protocol := http | http2
 }.
 
 -type raw_opts() :: #{}.
@@ -249,6 +231,7 @@
 	protocol_state :: any(),
 
 	proxy_connect :: module(),
+	proxy_name :: atom(),
 	proxy_opts :: opts()
 }).
 
@@ -324,8 +307,7 @@ check_options([Opt = {protocols, L}|Opts]) when is_list(L) ->
 	end;
 check_options([{retry, R}|Opts]) when is_integer(R), R >= 0 ->
 	check_options(Opts);
-check_options([{retry_fun, F}|Opts]) when is_function(F, 2) ->
-	check_options(Opts);
+%% Remove
 check_options([{retry_timeout, T}|Opts]) when is_integer(T), T >= 0 ->
 	check_options(Opts);
 %% Removed
@@ -388,7 +370,7 @@ consider_tracing(_, _) ->
 
 -spec set_owner(pid(), pid()) -> ok.
 set_owner(ServerPid, NewOwnerPid) ->
-	gen_statem:cast(ServerPid, {set_owner, self(), NewOwnerPid}).
+	gen_statem2:cast(ServerPid, {set_owner, self(), NewOwnerPid}).
 
 -spec info(pid()) -> map().
 info(ServerPid) ->
@@ -452,7 +434,7 @@ close(ServerPid) ->
 
 -spec shutdown(pid()) -> ok.
 shutdown(ServerPid) ->
-	gen_statem:cast(ServerPid, shutdown).
+	gen_statem2:cast(ServerPid, shutdown).
 
 %% Requests.
 
@@ -559,7 +541,7 @@ headers(ServerPid, Method, Path, Headers, ReqOpts) ->
 	StreamRef = make_ref(),
 	InitialFlow = maps:get(flow, ReqOpts, infinity),
 	ReplyTo = maps:get(reply_to, ReqOpts, self()),
-	gen_statem:cast(ServerPid, {headers, ReplyTo, StreamRef,
+	gen_statem2:cast(ServerPid, {headers, ReplyTo, StreamRef,
 		Method, Path, normalize_headers(Headers), InitialFlow}),
 	StreamRef.
 
@@ -572,7 +554,7 @@ request(ServerPid, Method, Path, Headers, Body, ReqOpts) ->
 	StreamRef = make_ref(),
 	InitialFlow = maps:get(flow, ReqOpts, infinity),
 	ReplyTo = maps:get(reply_to, ReqOpts, self()),
-	gen_statem:cast(ServerPid, {request, ReplyTo, StreamRef,
+	gen_statem2:cast(ServerPid, {request, ReplyTo, StreamRef,
 		Method, Path, normalize_headers(Headers), Body, InitialFlow}),
 	StreamRef.
 
@@ -595,7 +577,7 @@ data(ServerPid, StreamRef, IsFin, Data) ->
 		0 when IsFin =:= nofin ->
 			ok;
 		_ ->
-			gen_statem:cast(ServerPid, {data, self(), StreamRef, IsFin, Data})
+			gen_statem2:cast(ServerPid, {data, self(), StreamRef, IsFin, Data})
 	end.
 
 %% Awaiting gun messages.
@@ -798,19 +780,19 @@ flush_ref(StreamRef) ->
 
 -spec update_flow(pid(), reference(), pos_integer()) -> ok.
 update_flow(ServerPid, StreamRef, Flow) ->
-	gen_statem:cast(ServerPid, {update_flow, self(), StreamRef, Flow}).
+	gen_statem2:cast(ServerPid, {update_flow, self(), StreamRef, Flow}).
 
 %% Cancelling a stream.
 
 -spec cancel(pid(), reference()) -> ok.
 cancel(ServerPid, StreamRef) ->
-	gen_statem:cast(ServerPid, {cancel, self(), StreamRef}).
+	gen_statem2:cast(ServerPid, {cancel, self(), StreamRef}).
 
 %% Information about a stream.
 
 -spec stream_info(pid(), reference()) -> {ok, map() | undefined} | {error, not_connected}.
 stream_info(ServerPid, StreamRef) ->
-	gen_statem:call(ServerPid, {stream_info, StreamRef}).
+	gen_statem2:call(ServerPid, {stream_info, StreamRef}).
 
 %% Websocket.
 
@@ -821,7 +803,7 @@ ws_upgrade(ServerPid, Path) ->
 -spec ws_upgrade(pid(), iodata(), req_headers()) -> reference().
 ws_upgrade(ServerPid, Path, Headers) ->
 	StreamRef = make_ref(),
-	gen_statem:cast(ServerPid, {ws_upgrade, self(), StreamRef, Path, Headers}),
+	gen_statem2:cast(ServerPid, {ws_upgrade, self(), StreamRef, Path, Headers}),
 	StreamRef.
 
 -spec ws_upgrade(pid(), iodata(), req_headers(), ws_opts()) -> reference().
@@ -829,21 +811,21 @@ ws_upgrade(ServerPid, Path, Headers, Opts) ->
 	ok = gun_ws:check_options(Opts),
 	StreamRef = make_ref(),
 	ReplyTo = maps:get(reply_to, Opts, self()),
-	gen_statem:cast(ServerPid, {ws_upgrade, ReplyTo, StreamRef, Path, Headers, Opts}),
+	gen_statem2:cast(ServerPid, {ws_upgrade, ReplyTo, StreamRef, Path, Headers, Opts}),
 	StreamRef.
 
 %% @todo ws_send/2 will need to be deprecated in favor of a variant with StreamRef.
 %% But it can be kept for the time being since it can still work for HTTP/1.1.
 -spec ws_send(pid(), ws_frame() | [ws_frame()]) -> ok.
 ws_send(ServerPid, Frames) ->
-	gen_statem:cast(ServerPid, {ws_send, self(), Frames}).
+	gen_statem2:cast(ServerPid, {ws_send, self(), Frames}).
 
 %% Internals.
 
 callback_mode() -> state_functions.
 
 start_link(Owner, Host, Port, Opts) ->
-	gen_statem:start_link(?MODULE, {Owner, Host, Port, Opts}, []).
+	gen_statem2:start_link(?MODULE, {Owner, Host, Port, Opts}, []).
 
 init({Owner, Host, Port, Opts}) ->
 	Retry = maps:get(retry, Opts, 0),
@@ -855,28 +837,28 @@ init({Owner, Host, Port, Opts}) ->
 	end,
 	OwnerRef = monitor(process, Owner),
 
-	{ProxyConnect, ProxyOpts, Host1, Port1} = case maps:get(proxy, Opts, undefined) of
+	{ProxyConnect, ProxyName, ProxyOpts, Host1, Port1} = case maps:get(proxy, Opts, undefined) of
 	 	Url when is_binary(Url) orelse is_list(Url) ->
       Url1 = gun_url:parse_url(Url),
       #{host := ProxyHost, port := ProxyPort} = gun_url:normalize(Url1),
       {ProxyUser, ProxyPass} = get_proxy_auth(Opts),
       PO = [{connect_host, Host}, {connect_port, Port}, {connect_user, ProxyUser}, {connect_pass, ProxyPass}],
-      select_http_proxy(Transport, PO, ProxyHost, ProxyPort);
+      return_http_proxy(Transport, PO, ProxyHost, ProxyPort);
     {ProxyHost, ProxyPort} ->
       {ProxyUser, ProxyPass} = get_proxy_auth(Opts),
       PO = [{connect_host, Host}, {connect_port, Port}, {connect_user, ProxyUser}, {connect_pass, ProxyPass}],
-      select_http_proxy(Transport, PO, ProxyHost, ProxyPort);
+      return_http_proxy(Transport, PO, ProxyHost, ProxyPort);
     {connect, ProxyHost, ProxyPort} ->
       {ProxyUser, ProxyPass} = get_proxy_auth(Opts),
       PO = [{connect_host, Host}, {connect_port, Port}, {connect_user, ProxyUser}, {connect_pass, ProxyPass}],
-      select_http_proxy(Transport, PO, ProxyHost, ProxyPort);
+      return_http_proxy(Transport, PO, ProxyHost, ProxyPort);
     {socks5, ProxyHost, ProxyPort} ->
       {ProxyUser, ProxyPass} = get_proxy_auth(Opts),
       ProxyResolve = maps:get(socks5_resolve, Opts, local),
       PO = [{socks5_host, ProxyHost}, {socks5_port, ProxyPort}, {socks5_user, ProxyUser}, {socks5_pass, ProxyPass}, {socks5_resolve, ProxyResolve}],
-      {gun_socks5_proxy, PO, Host, Port};
+      {gun_socks5_proxy, gun_socks5_proxy:name(), PO, Host, Port};
 	 	_ ->
-      {Transport, [], Host, Port}
+      {gun_tcp, gun_tcp:name(), [], Host, Port}
  	end,
 	gun_stats:update_counter(active_connection, 1),
 	gun_stats:update_counter(total_connection, 1),
@@ -886,7 +868,7 @@ init({Owner, Host, Port, Opts}) ->
 		host=Host1, port=Port1, origin_scheme=OriginScheme,
 		origin_host=Host, origin_port=Port, opts=Opts,
 		transport=Transport, messages=Transport:messages(),
-		proxy_connect = ProxyConnect, proxy_opts = ProxyOpts
+		proxy_connect = ProxyConnect, proxy_name = ProxyName, proxy_opts = ProxyOpts
 	},
 	{ok, not_connected, State,
 		[{selective, fun selective_loop_receive/1}, {next_event, internal, {retries, max(Retry, 1), connect}}]}.
@@ -1052,16 +1034,14 @@ connected(cast, {headers, ReplyTo, StreamRef, Method, Path, Headers, InitialFlow
 connected(cast, {request, ReplyTo, StreamRef, Method, Path, Headers, Body, InitialFlow},
 		State=#state{origin_host=Host, origin_port=Port,
 			protocol=Protocol, protocol_state=ProtoState,
-			transport = Transport, opts = Opts, proxy_connect = ProxyConnect}) ->
-	{Path1, Headers1} = format_path_headers(Transport, ProxyConnect, Host, Port, Path, Headers, Opts),
+			transport = Transport, opts = Opts, proxy_name = ProxyName}) ->
+	{Path1, Headers1} = format_path_headers(Transport, ProxyName, Host, Port, Path, Headers, Opts),
 	ProtoState2 = Protocol:request(ProtoState,
 		StreamRef, ReplyTo, Method, Host, Port, Path1, Headers1, Body,
 		InitialFlow),
 	{keep_state, State#state{protocol_state=ProtoState2}};
-connected(cast, {connect, ReplyTo, StreamRef, Destination, Headers, InitialFlow},
-		State=#state{protocol=Protocol, protocol_state=ProtoState}) ->
-	ProtoState2 = Protocol:connect(ProtoState, StreamRef, ReplyTo, Destination, Headers, InitialFlow),
-	{keep_state, State#state{protocol_state=ProtoState2}};
+%% Removed
+
 %% Public Websocket interface.
 %% @todo Maybe make an interface in the protocol module instead of checking on protocol name.
 %% An interface would also make sure that HTTP/1.0 can't upgrade.
@@ -1387,17 +1367,17 @@ selective_loop_receive(HibernateAfterTimeout) ->
 
 
 get_proxy_auth(Opts) ->
-	case maps:get(proxy_auth, Opts) of
+	case maps:get(proxy_auth, Opts, nil) of
 		{U, P} -> {U, P};
 		_ -> {undefined, undefined}
 	end.
 
-select_http_proxy(gun_tcp, _ProxyOpts, ProxyHost, ProxyPort) -> {gun_tcp, [], ProxyHost, ProxyPort};
-select_http_proxy(_, ProxyOpts, ProxyHost, ProxyPort) -> {gun_http_proxy, ProxyOpts, ProxyHost, ProxyPort}.
+return_http_proxy(gun_tcp, _ProxyOpts, ProxyHost, ProxyPort) -> {gun_tcp, gun_http_proxy:name(), [], ProxyHost, ProxyPort};
+return_http_proxy(_, ProxyOpts, ProxyHost, ProxyPort) -> {gun_http_proxy, gun_http_proxy:name(), ProxyOpts, ProxyHost, ProxyPort}.
 
-format_path_headers(gun_tcp, ProxyConnect, OriginHost, OriginPort, Path, Headers, Opts) ->
+format_path_headers(Transport, ProxyName, OriginHost, OriginPort, Path, Headers, Opts) ->
 	case maps:get(proxy_auth, Opts, undefined) of
-		{U, P} when ProxyConnect == gun_http_proxy ->
+		{U, P} when Transport == gun_tcp andalso ProxyName == http_proxy ->
 			{add_host_to_path(OriginHost, OriginPort, Path), add_proxy_authorization(U, P, Headers)};
 		_ ->
 			{Path, Headers}

@@ -9,11 +9,11 @@ defmodule Gun do
     :gun_app.stop(state)
   end
 
-  def default_option(connect_timeout, recv_timeout) do
+  def default_option(connect_timeout) do
     %{
-      recv_timeout: recv_timeout,
       connect_timeout: connect_timeout,
-      transport_opts: [{:reuseaddr, true}, {:reuse_sessions, false}, {:linger, {false, 0}}, {:versions, [:"tlsv1.2"]}]
+      tcp_opts: [{:reuseaddr, true}, {:reuse_sessions, false}, {:linger, {false, 0}}],
+      tls_opts: [{:versions, [:"tlsv1.2"]}]
     }
   end
 
@@ -134,7 +134,7 @@ defmodule Gun do
   end
 
   def ping(ip) do
-    opts = Gun.default_option(20000, 10000)
+    opts = Gun.default_option(20000)
     Gun.http_request("GET", "http://#{ip}:22225/ping", %{"connection" => "close"}, "", opts, nil)
     receive do
       msg ->
