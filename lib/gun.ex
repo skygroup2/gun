@@ -132,16 +132,4 @@ defmodule Gun do
       :ok
     end
   end
-
-  def ping(ip) do
-    opts = Gun.default_option(20000)
-    Gun.http_request("GET", "http://#{ip}:22225/ping", %{"connection" => "close"}, "", opts, nil)
-    receive do
-      msg ->
-        IO.inspect msg
-    after
-      1000 -> :ok
-    end
-  end
-
 end
