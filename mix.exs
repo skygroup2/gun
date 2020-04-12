@@ -27,6 +27,7 @@ defmodule Gun.MixProject do
       {:certifi, "~> 2.5"},
       {:ssl_verify_fun, "~> 1.1"},
       {:gen_statem2, git: "https://github.com/Subhuti20/gen_statem2.git", branch: "master"},
+      {:jason, "~> 1.2", only: :test},
     ]
   end
 end
