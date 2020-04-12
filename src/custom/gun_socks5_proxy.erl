@@ -2,28 +2,15 @@
 
 -export([
   name/0,
-  connect/3,
   connect/4
 ]).
 
--type socks5_socket() :: {atom(), inet:socket()}.
--export_type([socks5_socket/0]).
-
 name() -> socks5_proxy.
 
-ssl_opts(Host, Opts) ->
-  [{server_name_indication, Host} | gun_util:ssl_opts(Host,Opts)].
-
-connect(Host, Port, Opts) ->
-  connect(Host, Port, Opts, 35000).
-
-
-connect(Host, Port, Opts, Timeout) when is_list(Host), is_integer(Port),
-                                        (Timeout =:= infinity orelse is_integer(Timeout)) ->
+connect(Host, Port, Opts, Timeout) when is_list(Host), is_integer(Port), (Timeout =:= infinity orelse is_integer(Timeout)) ->
   %% get the proxy host and port from the options
   ProxyHost = proplists:get_value(socks5_host, Opts),
   ProxyPort = proplists:get_value(socks5_port, Opts),
-  Transport = proplists:get_value(socks5_transport, Opts),
 
   %% filter connection options
   AcceptedOpts =  [linger, nodelay, send_timeout, send_timeout_close, raw, inet6, ip],
@@ -36,20 +23,7 @@ connect(Host, Port, Opts, Timeout) when is_list(Host), is_integer(Port),
     {ok, Socket} ->
       case do_handshake(Socket, Host, Port, Opts, Timeout) of
         ok ->
-          case Transport of
-            gun_tls ->
-              SSLOpts = ssl_opts(Host, Opts),
-              %% upgrade the tcp connection
-              case ssl:connect(Socket, SSLOpts, Timeout) of
-                {ok, SslSocket} ->
-                  {ok, {Transport, SslSocket}};
-                Error ->
-                  gen_tcp:close(Socket),
-                  Error
-              end;
-            _ ->
-              {ok, {Transport, Socket}}
-          end;
+          {ok, Socket};
         Error ->
           gen_tcp:close(Socket),
           Error

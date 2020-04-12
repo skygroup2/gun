@@ -21,15 +21,15 @@
 -export([default_keepalive/0]).
 -export([init/4]).
 -export([switch_transport/3]).
--export([handle/4]).
+-export([handle/2]).
 -export([update_flow/4]).
--export([closing/4]).
--export([close/4]).
--export([keepalive/3]).
--export([headers/11]).
--export([request/12]).
--export([data/7]).
--export([cancel/5]).
+-export([closing/2]).
+-export([close/2]).
+-export([keepalive/1]).
+-export([headers/9]).
+-export([request/10]).
+-export([data/5]).
+-export([cancel/3]).
 -export([timeout/3]).
 -export([stream_info/2]).
 -export([down/1]).
@@ -159,21 +159,19 @@ handle_ret(Commands, #http2_state{commands_queue=Queue}) when is_list(Commands) 
 handle_ret(Command, #http2_state{commands_queue=Queue}) ->
 	lists:reverse([Command|Queue]).
 
-handle(Data, State=#http2_state{buffer=Buffer}, EvHandler, EvHandlerState) ->
-	parse(<< Buffer/binary, Data/binary >>, State#http2_state{buffer= <<>>},
-		EvHandler, EvHandlerState).
+handle(Data, State=#http2_state{buffer=Buffer}) ->
+	parse(<< Buffer/binary, Data/binary >>, State#http2_state{buffer= <<>>}).
 
-parse(Data, State0=#http2_state{status=preface, http2_machine=HTTP2Machine},
-		EvHandler, EvHandlerState0) ->
+parse(Data, State0=#http2_state{status=preface, http2_machine=HTTP2Machine}) ->
 	MaxFrameSize = cow_http2_machine:get_local_setting(max_frame_size, HTTP2Machine),
 	case cow_http2:parse(Data, MaxFrameSize) of
 		{ok, Frame, Rest} when element(1, Frame) =:= settings ->
-			case frame(State0#http2_state{status=connected}, Frame, EvHandler, EvHandlerState0) of
-				{Error={error, _}, EvHandlerState} -> {handle_ret(Error, State0), EvHandlerState};
-				{State, EvHandlerState} -> parse(Rest, State, EvHandler, EvHandlerState)
+			case frame(State0#http2_state{status=connected}, Frame) of
+				Error={error, _} -> handle_ret(Error, State0);
+				State -> parse(Rest, State)
 			end;
 		more ->
-			{handle_ret({state, State0#http2_state{buffer=Data}}, State0), EvHandlerState0};
+			handle_ret({state, State0#http2_state{buffer=Data}}, State0);
 		%% Any error in the preface is converted to this specific error
 		%% to make debugging the problem easier (it's the server's fault).
 		_ ->
@@ -183,102 +181,68 @@ parse(Data, State0=#http2_state{status=preface, http2_machine=HTTP2Machine},
 				_ ->
 					'Invalid connection preface received. (RFC7540 3.5)'
 			end,
-			{handle_ret(connection_error(State0, {connection_error, protocol_error, Reason}), State0),
-				EvHandlerState0}
+			handle_ret(connection_error(State0, {connection_error, protocol_error, Reason}), State0)
 	end;
-parse(Data, State0=#http2_state{status=Status, http2_machine=HTTP2Machine, streams=Streams},
-		EvHandler, EvHandlerState0) ->
+parse(Data, State0=#http2_state{status=Status, http2_machine=HTTP2Machine, streams=Streams}) ->
 	MaxFrameSize = cow_http2_machine:get_local_setting(max_frame_size, HTTP2Machine),
 	case cow_http2:parse(Data, MaxFrameSize) of
 		{ok, Frame, Rest} ->
-			case frame(State0, Frame, EvHandler, EvHandlerState0) of
-				{Error={error, _}, EvHandlerState} -> {handle_ret(Error, State0), EvHandlerState};
-				{State, EvHandlerState} -> parse(Rest, State, EvHandler, EvHandlerState)
+			case frame(State0, Frame) of
+				Error={error, _} -> handle_ret(Error, State0);
+				State -> parse(Rest, State)
 			end;
 		{ignore, Rest} ->
 			case ignored_frame(State0) of
-				Error = {error, _} -> {handle_ret(Error, State0), EvHandlerState0};
-				State -> parse(Rest, State, EvHandler, EvHandlerState0)
+				Error = {error, _} -> handle_ret(Error, State0);
+				State -> parse(Rest, State)
 			end;
 		{stream_error, StreamID, Reason, Human, Rest} ->
-			parse(Rest, reset_stream(State0, StreamID, {stream_error, Reason, Human}),
-				EvHandler, EvHandlerState0);
+			parse(Rest, reset_stream(State0, StreamID, {stream_error, Reason, Human}));
 		Error = {connection_error, _, _} ->
-			{handle_ret(connection_error(State0, Error), State0), EvHandlerState0};
+			handle_ret(connection_error(State0, Error), State0);
 		%% If we both received and sent a GOAWAY frame and there are no streams
 		%% currently running, we can close the connection immediately.
 		more when Status =/= connected, Streams =:= #{} ->
-			{handle_ret([{state, State0#http2_state{buffer=Data, status=closing}}, close], State0),
-				EvHandlerState0};
+			handle_ret([{state, State0#http2_state{buffer=Data, status=closing}}, close], State0);
 		%% Otherwise we enter the closing state.
 		more when Status =:= goaway ->
-			{handle_ret([{state, State0#http2_state{buffer=Data, status=closing}}, closing(State0)], State0),
-				EvHandlerState0};
+			handle_ret([{state, State0#http2_state{buffer=Data, status=closing}}, closing(State0)], State0);
 		more ->
-			{handle_ret({state, State0#http2_state{buffer=Data}}, State0), EvHandlerState0}
+			handle_ret({state, State0#http2_state{buffer=Data}}, State0)
 	end.
 
 %% Frames received.
 
-frame(State=#http2_state{http2_machine=HTTP2Machine0}, Frame, EvHandler, EvHandlerState0) ->
-	EvHandlerState = if
-		element(1, Frame) =:= headers; element(1, Frame) =:= push_promise ->
-			EvStreamID = element(2, Frame),
-			case cow_http2_machine:get_stream_remote_state(EvStreamID, HTTP2Machine0) of
-				{ok, idle} ->
-					#stream{ref=StreamRef, reply_to=ReplyTo} = get_stream_by_id(State, EvStreamID),
-					EvCallback = case element(1, Frame) of
-						headers -> response_start;
-						push_promise -> push_promise_start
-					end,
-					EvHandler:EvCallback(#{
-						stream_ref => StreamRef,
-						reply_to => ReplyTo
-					}, EvHandlerState0);
-				%% Trailers or invalid header frame.
-				_ ->
-					EvHandlerState0
-			end;
-		true ->
-			EvHandlerState0
-	end,
+frame(State=#http2_state{http2_machine=HTTP2Machine0}, Frame) ->
 	case cow_http2_machine:frame(Frame, HTTP2Machine0) of
 		%% We only update the connection's window when receiving a lingering data frame.
 		{ok, HTTP2Machine} when element(1, Frame) =:= data ->
-			{update_window(State#http2_state{http2_machine=HTTP2Machine}), EvHandlerState};
+			update_window(State#http2_state{http2_machine=HTTP2Machine});
 		{ok, HTTP2Machine} ->
-			{maybe_ack(State#http2_state{http2_machine=HTTP2Machine}, Frame),
-				EvHandlerState};
+			maybe_ack(State#http2_state{http2_machine=HTTP2Machine}, Frame);
 		{ok, {data, StreamID, IsFin, Data}, HTTP2Machine} ->
-			data_frame(State#http2_state{http2_machine=HTTP2Machine}, StreamID, IsFin, Data,
-				EvHandler, EvHandlerState);
+			data_frame(State#http2_state{http2_machine=HTTP2Machine}, StreamID, IsFin, Data);
 		{ok, {headers, StreamID, IsFin, Headers, PseudoHeaders, BodyLen}, HTTP2Machine} ->
 			headers_frame(State#http2_state{http2_machine=HTTP2Machine},
-				StreamID, IsFin, Headers, PseudoHeaders, BodyLen,
-				EvHandler, EvHandlerState);
+				StreamID, IsFin, Headers, PseudoHeaders, BodyLen);
 		{ok, {trailers, StreamID, Trailers}, HTTP2Machine} ->
 			trailers_frame(State#http2_state{http2_machine=HTTP2Machine},
-				StreamID, Trailers, EvHandler, EvHandlerState);
+				StreamID, Trailers);
 		{ok, {rst_stream, StreamID, Reason}, HTTP2Machine} ->
 			rst_stream_frame(State#http2_state{http2_machine=HTTP2Machine},
-				StreamID, Reason, EvHandler, EvHandlerState);
+				StreamID, Reason);
 		{ok, {push_promise, StreamID, PromisedStreamID, Headers, PseudoHeaders}, HTTP2Machine} ->
 			push_promise_frame(State#http2_state{http2_machine=HTTP2Machine},
-				StreamID, PromisedStreamID, Headers, PseudoHeaders,
-				EvHandler, EvHandlerState);
+				StreamID, PromisedStreamID, Headers, PseudoHeaders);
 		{ok, GoAway={goaway, _, _, _}, HTTP2Machine} ->
-			{goaway(State#http2_state{http2_machine=HTTP2Machine}, GoAway),
-				EvHandlerState};
+			goaway(State#http2_state{http2_machine=HTTP2Machine}, GoAway);
 		{send, SendData, HTTP2Machine} ->
-			send_data(maybe_ack(State#http2_state{http2_machine=HTTP2Machine}, Frame), SendData,
-				EvHandler, EvHandlerState);
+			send_data(maybe_ack(State#http2_state{http2_machine=HTTP2Machine}, Frame), SendData);
 		{error, {stream_error, StreamID, Reason, Human}, HTTP2Machine} ->
-			{reset_stream(State#http2_state{http2_machine=HTTP2Machine},
-				StreamID, {stream_error, Reason, Human}),
-				EvHandlerState};
+			reset_stream(State#http2_state{http2_machine=HTTP2Machine},
+				StreamID, {stream_error, Reason, Human});
 		{error, Error={connection_error, _, _}, HTTP2Machine} ->
-			{connection_error(State#http2_state{http2_machine=HTTP2Machine}, Error),
-				EvHandlerState}
+			connection_error(State#http2_state{http2_machine=HTTP2Machine}, Error)
 	end.
 
 maybe_ack(State=#http2_state{socket=Socket, transport=Transport}, Frame) ->
@@ -289,8 +253,8 @@ maybe_ack(State=#http2_state{socket=Socket, transport=Transport}, Frame) ->
 	end,
 	State.
 
-data_frame(State0, StreamID, IsFin, Data, EvHandler, EvHandlerState0) ->
-	Stream = #stream{ref=StreamRef, reply_to=ReplyTo, flow=Flow0,
+data_frame(State0, StreamID, IsFin, Data) ->
+	Stream = #stream{flow=Flow0,
 		handler_state=Handlers0} = get_stream_by_id(State0, StreamID),
 	{ok, Dec, Handlers} = gun_content_handler:handle(IsFin, Data, Handlers0),
 	Flow = case Flow0 of
@@ -298,37 +262,28 @@ data_frame(State0, StreamID, IsFin, Data, EvHandler, EvHandlerState0) ->
 		_ -> Flow0 - Dec
 	end,
 	State1 = store_stream(State0, Stream#stream{flow=Flow, handler_state=Handlers}),
-	{State, EvHandlerState} = case byte_size(Data) of
+	State = case byte_size(Data) of
 		%% We do not send a WINDOW_UPDATE if the DATA frame was of size 0.
 		0 when IsFin =:= fin ->
-			EvHandlerState1 = EvHandler:response_end(#{
-				stream_ref => StreamRef,
-				reply_to => ReplyTo
-			}, EvHandlerState0),
-			{State1, EvHandlerState1};
+			State1;
 		0 ->
-			{State1, EvHandlerState0};
+			State1;
 		_ ->
 			%% We do not send a stream WINDOW_UPDATE when the flow control kicks in
 			%% (it'll be sent when the flow recovers) or for the last DATA frame.
 			case IsFin of
 				nofin when Flow =< 0 ->
-					{update_window(State1), EvHandlerState0};
+					update_window(State1);
 				nofin ->
-					{update_window(State1, StreamID), EvHandlerState0};
+					update_window(State1, StreamID);
 				fin ->
-					EvHandlerState1 = EvHandler:response_end(#{
-						stream_ref => StreamRef,
-						reply_to => ReplyTo
-					}, EvHandlerState0),
-					{update_window(State1), EvHandlerState1}
+					update_window(State1)
 			end
 	end,
-	{maybe_delete_stream(State, StreamID, remote, IsFin), EvHandlerState}.
+	maybe_delete_stream(State, StreamID, remote, IsFin).
 
 headers_frame(State0=#http2_state{content_handlers=Handlers0, commands_queue=Commands},
-		StreamID, IsFin, Headers, #{status := Status}, _BodyLen,
-		EvHandler, EvHandlerState0) ->
+		StreamID, IsFin, Headers, #{status := Status}, _BodyLen) ->
 	Stream = get_stream_by_id(State0, StreamID),
 	#stream{
 		ref=StreamRef,
@@ -340,100 +295,60 @@ headers_frame(State0=#http2_state{content_handlers=Handlers0, commands_queue=Com
 	if
 		Status >= 100, Status =< 199 ->
 			ReplyTo ! {gun_inform, self(), StreamRef, Status, Headers},
-			EvHandlerState = EvHandler:response_inform(#{
-				stream_ref => StreamRef,
-				reply_to => ReplyTo,
-				status => Status,
-				headers => Headers
-			}, EvHandlerState0),
-			{State, EvHandlerState};
+			State;
 		true ->
 			ReplyTo ! {gun_response, self(), StreamRef, IsFin, Status, Headers},
-			EvHandlerState1 = EvHandler:response_headers(#{
-				stream_ref => StreamRef,
-				reply_to => ReplyTo,
-				status => Status,
-				headers => Headers
-			}, EvHandlerState0),
-			{Handlers, EvHandlerState} = case IsFin of
+			Handlers = case IsFin of
 				fin ->
-					EvHandlerState2 = EvHandler:response_end(#{
-						stream_ref => StreamRef,
-						reply_to => ReplyTo
-					}, EvHandlerState1),
-					{undefined, EvHandlerState2};
+					undefined;
 				nofin ->
-					{gun_content_handler:init(ReplyTo, StreamRef,
-						Status, Headers, Handlers0), EvHandlerState1}
+					gun_content_handler:init(ReplyTo, StreamRef,
+						Status, Headers, Handlers0)
 			end,
-			{maybe_delete_stream(store_stream(State, Stream#stream{handler_state=Handlers}),
-				StreamID, remote, IsFin),
-				EvHandlerState}
+			maybe_delete_stream(store_stream(State, Stream#stream{handler_state=Handlers}),
+				StreamID, remote, IsFin)
 	end.
 
-trailers_frame(State, StreamID, Trailers, EvHandler, EvHandlerState0) ->
+trailers_frame(State, StreamID, Trailers) ->
 	#stream{ref=StreamRef, reply_to=ReplyTo} = get_stream_by_id(State, StreamID),
 	%% @todo We probably want to pass this to gun_content_handler?
 	ReplyTo ! {gun_trailers, self(), StreamRef, Trailers},
-	ResponseEvent = #{
-		stream_ref => StreamRef,
-		reply_to => ReplyTo
-	},
-	EvHandlerState1 = EvHandler:response_trailers(ResponseEvent#{headers => Trailers}, EvHandlerState0),
-	EvHandlerState = EvHandler:response_end(ResponseEvent, EvHandlerState1),
-	{maybe_delete_stream(State, StreamID, remote, fin), EvHandlerState}.
+	maybe_delete_stream(State, StreamID, remote, fin).
 
-rst_stream_frame(State0, StreamID, Reason, EvHandler, EvHandlerState0) ->
+rst_stream_frame(State0, StreamID, Reason) ->
 	case take_stream(State0, StreamID) of
 		{#stream{ref=StreamRef, reply_to=ReplyTo}, State} ->
 			ReplyTo ! {gun_error, self(), StreamRef,
 				{stream_error, Reason, 'Stream reset by server.'}},
-			EvHandlerState = EvHandler:cancel(#{
-				stream_ref => StreamRef,
-				reply_to => ReplyTo,
-				endpoint => remote,
-				reason => Reason
-			}, EvHandlerState0),
-			{State, EvHandlerState};
+			State;
 		error ->
-			{State0, EvHandlerState0}
+			State0
 	end.
 
 %% Pushed streams receive the same initial flow value as the parent stream.
 push_promise_frame(State=#http2_state{socket=Socket, transport=Transport,
 		status=Status, http2_machine=HTTP2Machine0},
-		StreamID, PromisedStreamID, Headers, #{
-			method := Method, scheme := Scheme,
-			authority := Authority, path := Path},
-		EvHandler, EvHandlerState0) ->
+		StreamID, PromisedStreamID, Headers,
+		#{method := Method, scheme := Scheme, authority := Authority, path := Path}) ->
 	#stream{ref=StreamRef, reply_to=ReplyTo, flow=InitialFlow} = get_stream_by_id(State, StreamID),
 	PromisedStreamRef = make_ref(),
 	URI = iolist_to_binary([Scheme, <<"://">>, Authority, Path]),
-	PushPromiseEvent0 = #{
-		stream_ref => StreamRef,
-		reply_to => ReplyTo,
-		method => Method,
-		uri => URI,
-		headers => Headers
-	},
-	PushPromiseEvent = case Status of
+	case Status of
 		connected ->
-			ReplyTo ! {gun_push, self(), StreamRef, PromisedStreamRef, Method, URI, Headers},
-			PushPromiseEvent0#{promised_stream_ref => PromisedStreamRef};
+			ReplyTo ! {gun_push, self(), StreamRef, PromisedStreamRef, Method, URI, Headers};
 		_ ->
-			PushPromiseEvent0
+			ok
 	end,
-	EvHandlerState = EvHandler:push_promise_end(PushPromiseEvent, EvHandlerState0),
 	case Status of
 		connected ->
 			NewStream = #stream{id=PromisedStreamID, ref=PromisedStreamRef,
 				reply_to=ReplyTo, flow=InitialFlow, authority=Authority, path=Path},
-			{create_stream(State, NewStream), EvHandlerState};
+			create_stream(State, NewStream);
 		%% We cancel the push_promise immediately when we are shutting down.
 		_ ->
 			{ok, HTTP2Machine} = cow_http2_machine:reset_stream(PromisedStreamID, HTTP2Machine0),
 			Transport:send(Socket, cow_http2:rst_stream(PromisedStreamID, cancel)),
-			{State#http2_state{http2_machine=HTTP2Machine}, EvHandlerState}
+			State#http2_state{http2_machine=HTTP2Machine}
 	end.
 
 ignored_frame(State=#http2_state{http2_machine=HTTP2Machine0}) ->
@@ -524,10 +439,10 @@ goaway_streams([StreamWithID|Tail], LastStreamID, Reason, Acc, RefsAcc) ->
 	goaway_streams(Tail, LastStreamID, Reason, [StreamWithID|Acc], RefsAcc).
 
 %% We are already closing, do nothing.
-closing(_, #http2_state{status=closing}, _, EvHandlerState) ->
-	{[], EvHandlerState};
+closing(_, #http2_state{status=closing}) ->
+	[];
 closing(Reason0, State=#http2_state{socket=Socket, transport=Transport,
-		http2_machine=HTTP2Machine}, _, EvHandlerState) ->
+		http2_machine=HTTP2Machine}) ->
 	Reason = case Reason0 of
 		normal -> no_error;
 		owner_down -> no_error;
@@ -536,21 +451,21 @@ closing(Reason0, State=#http2_state{socket=Socket, transport=Transport,
 	Transport:send(Socket, cow_http2:goaway(
 		cow_http2_machine:get_last_streamid(HTTP2Machine),
 		Reason, <<>>)),
-	{[
+	[
 		{state, State#http2_state{status=closing}},
 		closing(State)
-	], EvHandlerState}.
+	].
 
 closing(#http2_state{opts=Opts}) ->
 	Timeout = maps:get(closing_timeout, Opts, 15000),
 	{closing, Timeout}.
 
-close(Reason0, #http2_state{streams=Streams}, _, EvHandlerState) ->
+close(Reason0, #http2_state{streams=Streams}) ->
 	Reason = close_reason(Reason0),
-	_ = maps:fold(fun(_, Stream, _) ->
+	maps:fold(fun(_, Stream, _) ->
 		close_stream(Stream, Reason)
 	end, [], Streams),
-	EvHandlerState.
+	ok.
 
 close_reason(closed) -> closed;
 close_reason(Reason) -> {closed, Reason}.
@@ -560,55 +475,34 @@ close_stream(#stream{ref=StreamRef, reply_to=ReplyTo}, Reason) ->
 	ReplyTo ! {gun_error, self(), StreamRef, Reason},
 	ok.
 
-keepalive(State=#http2_state{socket=Socket, transport=Transport}, _, EvHandlerState) ->
+keepalive(State=#http2_state{socket=Socket, transport=Transport}) ->
 	Transport:send(Socket, cow_http2:ping(0)),
-	{State, EvHandlerState}.
+	State.
 
 headers(State=#http2_state{socket=Socket, transport=Transport, opts=Opts,
 		http2_machine=HTTP2Machine0}, StreamRef, ReplyTo, Method, Host, Port,
-		Path, Headers0, InitialFlow0, EvHandler, EvHandlerState0) ->
+		Path, Headers0, InitialFlow0) ->
 	{ok, StreamID, HTTP2Machine1} = cow_http2_machine:init_stream(
 		iolist_to_binary(Method), HTTP2Machine0),
 	{ok, PseudoHeaders, Headers} = prepare_headers(State, Method, Host, Port, Path, Headers0),
 	Authority = maps:get(authority, PseudoHeaders),
-	RequestEvent = #{
-		stream_ref => StreamRef,
-		reply_to => ReplyTo,
-		function => ?FUNCTION_NAME,
-		method => Method,
-		authority => Authority,
-		path => Path,
-		headers => Headers
-	},
-	EvHandlerState1 = EvHandler:request_start(RequestEvent, EvHandlerState0),
 	{ok, IsFin, HeaderBlock, HTTP2Machine} = cow_http2_machine:prepare_headers(
 		StreamID, HTTP2Machine1, nofin, PseudoHeaders, Headers),
 	Transport:send(Socket, cow_http2:headers(StreamID, IsFin, HeaderBlock)),
-	EvHandlerState = EvHandler:request_headers(RequestEvent, EvHandlerState1),
 	InitialFlow = initial_flow(InitialFlow0, Opts),
 	Stream = #stream{id=StreamID, ref=StreamRef, reply_to=ReplyTo, flow=InitialFlow,
 		authority=Authority, path=Path},
-	{create_stream(State#http2_state{http2_machine=HTTP2Machine}, Stream), EvHandlerState}.
+	create_stream(State#http2_state{http2_machine=HTTP2Machine}, Stream).
 
 request(State0=#http2_state{socket=Socket, transport=Transport, opts=Opts,
 		http2_machine=HTTP2Machine0}, StreamRef, ReplyTo, Method, Host, Port,
-		Path, Headers0, Body, InitialFlow0, EvHandler, EvHandlerState0) ->
+		Path, Headers0, Body, InitialFlow0) ->
 	Headers1 = lists:keystore(<<"content-length">>, 1, Headers0,
 		{<<"content-length">>, integer_to_binary(iolist_size(Body))}),
 	{ok, StreamID, HTTP2Machine1} = cow_http2_machine:init_stream(
 		iolist_to_binary(Method), HTTP2Machine0),
 	{ok, PseudoHeaders, Headers} = prepare_headers(State0, Method, Host, Port, Path, Headers1),
 	Authority = maps:get(authority, PseudoHeaders),
-	RequestEvent = #{
-		stream_ref => StreamRef,
-		reply_to => ReplyTo,
-		function => ?FUNCTION_NAME,
-		method => Method,
-		authority => Authority,
-		path => Path,
-		headers => Headers
-	},
-	EvHandlerState1 = EvHandler:request_start(RequestEvent, EvHandlerState0),
 	IsFin0 = case iolist_size(Body) of
 		0 -> fin;
 		_ -> nofin
@@ -616,20 +510,15 @@ request(State0=#http2_state{socket=Socket, transport=Transport, opts=Opts,
 	{ok, IsFin, HeaderBlock, HTTP2Machine} = cow_http2_machine:prepare_headers(
 		StreamID, HTTP2Machine1, IsFin0, PseudoHeaders, Headers),
 	Transport:send(Socket, cow_http2:headers(StreamID, IsFin, HeaderBlock)),
-	EvHandlerState = EvHandler:request_headers(RequestEvent, EvHandlerState1),
 	InitialFlow = initial_flow(InitialFlow0, Opts),
 	Stream = #stream{id=StreamID, ref=StreamRef, reply_to=ReplyTo, flow=InitialFlow,
 		authority=Authority, path=Path},
 	State = create_stream(State0#http2_state{http2_machine=HTTP2Machine}, Stream),
 	case IsFin of
 		fin ->
-			RequestEndEvent = #{
-				stream_ref => StreamRef,
-				reply_to => ReplyTo
-			},
-			{State, EvHandler:request_end(RequestEndEvent, EvHandlerState)};
+			State;
 		nofin ->
-			maybe_send_data(State, StreamID, fin, Body, EvHandler, EvHandlerState)
+			maybe_send_data(State, StreamID, fin, Body)
 	end.
 
 initial_flow(infinity, #{flow := InitialFlow}) -> InitialFlow;
@@ -660,59 +549,45 @@ prepare_headers(#http2_state{transport=Transport}, Method, Host0, Port, Path, He
 	},
 	{ok, PseudoHeaders, Headers}.
 
-data(State=#http2_state{http2_machine=HTTP2Machine}, StreamRef, ReplyTo, IsFin, Data,
-		EvHandler, EvHandlerState) ->
+data(State=#http2_state{http2_machine=HTTP2Machine}, StreamRef, ReplyTo, IsFin, Data) ->
 	case get_stream_by_ref(State, StreamRef) of
 		#stream{id=StreamID} ->
 			case cow_http2_machine:get_stream_local_state(StreamID, HTTP2Machine) of
 				{ok, fin, _} ->
-					{error_stream_closed(State, StreamRef, ReplyTo), EvHandlerState};
+					error_stream_closed(State, StreamRef, ReplyTo);
 				{ok, _, fin} ->
-					{error_stream_closed(State, StreamRef, ReplyTo), EvHandlerState};
+					error_stream_closed(State, StreamRef, ReplyTo);
 				{ok, _, _} ->
-					maybe_send_data(State, StreamID, IsFin, Data, EvHandler, EvHandlerState)
+					maybe_send_data(State, StreamID, IsFin, Data)
 			end;
 		error ->
-			{error_stream_not_found(State, StreamRef, ReplyTo), EvHandlerState}
+			error_stream_not_found(State, StreamRef, ReplyTo)
 	end.
 
-maybe_send_data(State=#http2_state{http2_machine=HTTP2Machine0}, StreamID, IsFin, Data0,
-		EvHandler, EvHandlerState) ->
+maybe_send_data(State=#http2_state{http2_machine=HTTP2Machine0}, StreamID, IsFin, Data0) ->
 	Data = case is_tuple(Data0) of
 		false -> {data, Data0};
 		true -> Data0
 	end,
 	case cow_http2_machine:send_or_queue_data(StreamID, HTTP2Machine0, IsFin, Data) of
 		{ok, HTTP2Machine} ->
-			{State#http2_state{http2_machine=HTTP2Machine}, EvHandlerState};
+			State#http2_state{http2_machine=HTTP2Machine};
 		{send, SendData, HTTP2Machine} ->
-			send_data(State#http2_state{http2_machine=HTTP2Machine}, SendData,
-				EvHandler, EvHandlerState)
+			send_data(State#http2_state{http2_machine=HTTP2Machine}, SendData)
 	end.
 
-send_data(State, [], _, EvHandlerState) ->
-	{State, EvHandlerState};
-send_data(State0, [{StreamID, IsFin, SendData}|Tail], EvHandler, EvHandlerState0) ->
-	{State, EvHandlerState} = send_data(State0, StreamID, IsFin, SendData, EvHandler, EvHandlerState0),
-	send_data(State, Tail, EvHandler, EvHandlerState).
+send_data(State, []) ->
+	State;
+send_data(State0, [{StreamID, IsFin, SendData}|Tail]) ->
+	State = send_data(State0, StreamID, IsFin, SendData),
+	send_data(State, Tail).
 
-send_data(State0, StreamID, IsFin, [Data], EvHandler, EvHandlerState0) ->
+send_data(State0, StreamID, IsFin, [Data]) ->
 	State = send_data_frame(State0, StreamID, IsFin, Data),
-	EvHandlerState = case IsFin of
-		nofin ->
-			EvHandlerState0;
-		fin ->
-			#stream{ref=StreamRef, reply_to=ReplyTo} = get_stream_by_id(State, StreamID),
-			RequestEndEvent = #{
-				stream_ref => StreamRef,
-				reply_to => ReplyTo
-			},
-			EvHandler:request_end(RequestEndEvent, EvHandlerState0)
-	end,
-	{maybe_delete_stream(State, StreamID, local, IsFin), EvHandlerState};
-send_data(State0, StreamID, IsFin, [Data|Tail], EvHandler, EvHandlerState) ->
+	maybe_delete_stream(State, StreamID, local, IsFin);
+send_data(State0, StreamID, IsFin, [Data|Tail]) ->
 	State = send_data_frame(State0, StreamID, nofin, Data),
-	send_data(State, StreamID, IsFin, Tail, EvHandler, EvHandlerState).
+	send_data(State, StreamID, IsFin, Tail).
 
 send_data_frame(State=#http2_state{socket=Socket, transport=Transport},
 		StreamID, IsFin, {data, Data}) ->
@@ -744,22 +619,14 @@ reset_stream(State0=#http2_state{socket=Socket, transport=Transport},
 	end.
 
 cancel(State=#http2_state{socket=Socket, transport=Transport, http2_machine=HTTP2Machine0},
-		StreamRef, ReplyTo, EvHandler, EvHandlerState0) ->
+		StreamRef, ReplyTo) ->
 	case get_stream_by_ref(State, StreamRef) of
 		#stream{id=StreamID} ->
 			{ok, HTTP2Machine} = cow_http2_machine:reset_stream(StreamID, HTTP2Machine0),
 			Transport:send(Socket, cow_http2:rst_stream(StreamID, cancel)),
-			EvHandlerState = EvHandler:cancel(#{
-				stream_ref => StreamRef,
-				reply_to => ReplyTo,
-				endpoint => local,
-				reason => cancel
-			}, EvHandlerState0),
-			{delete_stream(State#http2_state{http2_machine=HTTP2Machine}, StreamID),
-				EvHandlerState};
+			delete_stream(State#http2_state{http2_machine=HTTP2Machine}, StreamID);
 		error ->
-			{error_stream_not_found(State, StreamRef, ReplyTo),
-				EvHandlerState0}
+			error_stream_not_found(State, StreamRef, ReplyTo)
 	end.
 
 timeout(State=#http2_state{http2_machine=HTTP2Machine0}, {cow_http2_machine, Name}, TRef) ->

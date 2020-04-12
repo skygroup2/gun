@@ -90,7 +90,6 @@
 -export([callback_mode/0]).
 -export([init/1]).
 -export([not_connected/3]).
--export([domain_lookup/3]).
 -export([connecting/3]).
 -export([initial_tls_handshake/3]).
 -export([tls_handshake/3]).
@@ -247,7 +246,10 @@
 	active = true :: boolean(),
 	messages :: {atom(), atom(), atom()},
 	protocol :: module(),
-	protocol_state :: any()
+	protocol_state :: any(),
+
+	proxy_connect :: module(),
+	proxy_opts :: opts()
 }).
 
 %% Connection.
@@ -292,18 +294,15 @@ do_open(Host, Port, Opts0) ->
 
 check_options([]) ->
 	ok;
+check_options([{proxy, Proxy}|Opts]) when is_list(Proxy) orelse is_binary(Proxy) orelse is_tuple(Proxy) ->
+	check_options(Opts);
+check_options([{proxy_auth, ProxyAuth}|Opts]) when is_tuple(ProxyAuth) orelse ProxyAuth == nil ->
+	check_options(Opts);
 check_options([{connect_timeout, infinity}|Opts]) ->
 	check_options(Opts);
 check_options([{connect_timeout, T}|Opts]) when is_integer(T), T >= 0 ->
 	check_options(Opts);
-check_options([{cookie_store, {Mod, _}}|Opts]) when is_atom(Mod) ->
-	check_options(Opts);
-check_options([{domain_lookup_timeout, infinity}|Opts]) ->
-	check_options(Opts);
-check_options([{domain_lookup_timeout, T}|Opts]) when is_integer(T), T >= 0 ->
-	check_options(Opts);
-check_options([{event_handler, {Mod, _}}|Opts]) when is_atom(Mod) ->
-	check_options(Opts);
+%% Removed
 check_options([{http_opts, ProtoOpts}|Opts]) when is_map(ProtoOpts) ->
 	case gun_http:check_options(ProtoOpts) of
 		ok ->
@@ -329,13 +328,7 @@ check_options([{retry_fun, F}|Opts]) when is_function(F, 2) ->
 	check_options(Opts);
 check_options([{retry_timeout, T}|Opts]) when is_integer(T), T >= 0 ->
 	check_options(Opts);
-check_options([{socks_opts, ProtoOpts}|Opts]) when is_map(ProtoOpts) ->
-	case gun_socks:check_options(ProtoOpts) of
-		ok ->
-			check_options(Opts);
-		Error ->
-			Error
-	end;
+%% Removed
 check_options([{supervise, B}|Opts]) when B =:= true; B =:= false ->
 	check_options(Opts);
 check_options([{tcp_opts, L}|Opts]) when is_list(L) ->
@@ -364,7 +357,7 @@ check_protocols_opt(Protocols) ->
 	%% Protocols must not appear more than once, and they
 	%% must be one of http, http2 or socks.
 	ProtoNames0 = lists:usort([case P0 of {P, _} -> P; P -> P end || P0 <- Protocols]),
-	ProtoNames = [P || P <- ProtoNames0, lists:member(P, [http, http2, raw, socks])],
+	ProtoNames = [P || P <- ProtoNames0, lists:member(P, [http, http2])],
 	case length(Protocols) =:= length(ProtoNames) of
 		false -> error;
 		true ->
@@ -372,9 +365,7 @@ check_protocols_opt(Protocols) ->
 			%% must be checked as well.
 			TupleCheck = [case P of
 				{http, Opts} -> gun_http:check_options(Opts);
-				{http2, Opts} -> gun_http2:check_options(Opts);
-				{raw, Opts} -> gun_raw:check_options(Opts);
-				{socks, Opts} -> gun_socks:check_options(Opts)
+				{http2, Opts} -> gun_http2:check_options(Opts)
 			end || P <- Protocols, is_tuple(P)],
 			case lists:usort(TupleCheck) of
 				[] -> ok;
@@ -409,8 +400,7 @@ info(ServerPid) ->
 		origin_scheme=OriginScheme,
 		origin_host=OriginHost,
 		origin_port=OriginPort,
-		intermediaries=Intermediaries,
-		cookie_store=CookieStore
+		intermediaries=Intermediaries
 	}} = sys:get_state(ServerPid),
 	Info0 = #{
 		owner => Owner,
@@ -422,8 +412,7 @@ info(ServerPid) ->
 		origin_scheme => OriginScheme,
 		origin_host => OriginHost,
 		origin_port => OriginPort,
-		intermediaries => intermediaries_info(Intermediaries, []),
-		cookie_store => CookieStore
+		intermediaries => intermediaries_info(Intermediaries, [])
 	},
 	Info = case Socket of
 		undefined ->
@@ -823,9 +812,6 @@ cancel(ServerPid, StreamRef) ->
 stream_info(ServerPid, StreamRef) ->
 	gen_statem:call(ServerPid, {stream_info, StreamRef}).
 
-%% @todo Allow upgrading an HTTP/1.1 connection to HTTP/2.
-%% http2_upgrade
-
 %% Websocket.
 
 -spec ws_upgrade(pid(), iodata()) -> reference().
@@ -860,7 +846,7 @@ start_link(Owner, Host, Port, Opts) ->
 	gen_statem:start_link(?MODULE, {Owner, Host, Port, Opts}, []).
 
 init({Owner, Host, Port, Opts}) ->
-	Retry = maps:get(retry, Opts, 5),
+	Retry = maps:get(retry, Opts, 0),
 	OriginTransport = maps:get(transport, Opts, default_transport(Port)),
 	%% @todo The OriginScheme is not http when we connect to socks/raw.
 	{OriginScheme, Transport} = case OriginTransport of
@@ -868,119 +854,73 @@ init({Owner, Host, Port, Opts}) ->
 		tls -> {<<"https">>, gun_tls}
 	end,
 	OwnerRef = monitor(process, Owner),
-	{EvHandler, EvHandlerState0} = maps:get(event_handler, Opts,
-		{gun_default_event_h, undefined}),
-	EvHandlerState = EvHandler:init(#{
-		owner => Owner,
-		transport => OriginTransport,
-		origin_scheme => OriginScheme,
-		origin_host => Host,
-		origin_port => Port,
-		opts => Opts
-	}, EvHandlerState0),
-	CookieStore = maps:get(cookie_store, Opts, undefined),
+
+	{ProxyConnect, ProxyOpts, Host1, Port1} = case maps:get(proxy, Opts, undefined) of
+	 	Url when is_binary(Url) orelse is_list(Url) ->
+      Url1 = gun_url:parse_url(Url),
+      #{host := ProxyHost, port := ProxyPort} = gun_url:normalize(Url1),
+      {ProxyUser, ProxyPass} = get_proxy_auth(Opts),
+      PO = [{connect_host, Host}, {connect_port, Port}, {connect_user, ProxyUser}, {connect_pass, ProxyPass}],
+      select_http_proxy(Transport, PO, ProxyHost, ProxyPort);
+    {ProxyHost, ProxyPort} ->
+      {ProxyUser, ProxyPass} = get_proxy_auth(Opts),
+      PO = [{connect_host, Host}, {connect_port, Port}, {connect_user, ProxyUser}, {connect_pass, ProxyPass}],
+      select_http_proxy(Transport, PO, ProxyHost, ProxyPort);
+    {connect, ProxyHost, ProxyPort} ->
+      {ProxyUser, ProxyPass} = get_proxy_auth(Opts),
+      PO = [{connect_host, Host}, {connect_port, Port}, {connect_user, ProxyUser}, {connect_pass, ProxyPass}],
+      select_http_proxy(Transport, PO, ProxyHost, ProxyPort);
+    {socks5, ProxyHost, ProxyPort} ->
+      {ProxyUser, ProxyPass} = get_proxy_auth(Opts),
+      ProxyResolve = maps:get(socks5_resolve, Opts, local),
+      PO = [{socks5_host, ProxyHost}, {socks5_port, ProxyPort}, {socks5_user, ProxyUser}, {socks5_pass, ProxyPass}, {socks5_resolve, ProxyResolve}],
+      {gun_socks5_proxy, PO, Host, Port};
+	 	_ ->
+      {Transport, [], Host, Port}
+ 	end,
+	gun_stats:update_counter(active_connection, 1),
+	gun_stats:update_counter(total_connection, 1),
+	gun_stats:new_connection(self()),
+
 	State = #state{owner=Owner, status={up, OwnerRef},
-		host=Host, port=Port, origin_scheme=OriginScheme,
+		host=Host1, port=Port1, origin_scheme=OriginScheme,
 		origin_host=Host, origin_port=Port, opts=Opts,
 		transport=Transport, messages=Transport:messages(),
-		event_handler=EvHandler, event_handler_state=EvHandlerState,
-		cookie_store=CookieStore},
-	{ok, domain_lookup, State,
-		{next_event, internal, {retries, Retry, not_connected}}}.
+		proxy_connect = ProxyConnect, proxy_opts = ProxyOpts
+	},
+	{ok, not_connected, State,
+		[{selective, fun selective_loop_receive/1}, {next_event, internal, {retries, max(Retry, 1), connect}}]}.
 
 default_transport(443) -> tls;
 default_transport(_) -> tcp.
 
-not_connected(_, {retries, 0, normal}, State) ->
+not_connected(_Type, {retries, 0, normal}, State) ->
 	{stop, normal, State};
-not_connected(_, {retries, 0, Reason}, State) ->
+not_connected(_Type, {retries, 0, Reason}, State) ->
 	{stop, {shutdown, Reason}, State};
-not_connected(_, {retries, Retries0, _}, State=#state{opts=Opts}) ->
-	Fun = maps:get(retry_fun, Opts, fun default_retry_fun/2),
-	#{
-		timeout := Timeout,
-		retries := Retries
-	} = Fun(Retries0, Opts),
-	{next_state, domain_lookup, State,
-		{state_timeout, Timeout, {retries, Retries, not_connected}}};
+
+not_connected(Type, {retries, Retries0, Reason}, State) ->
+	connecting(Type, {retries, Retries0 - 1, Reason}, State);
+
 not_connected({call, From}, {stream_info, _}, _) ->
 	{keep_state_and_data, {reply, From, {error, not_connected}}};
 not_connected(Type, Event, State) ->
 	handle_common(Type, Event, ?FUNCTION_NAME, State).
 
-default_retry_fun(Retries, Opts) ->
-	%% We retry immediately after a disconnect.
-	Timeout = case maps:get(retry, Opts, 5) of
-		Retries -> 0;
-		_ -> maps:get(retry_timeout, Opts, 5000)
-	end,
-	#{
-		retries => Retries - 1,
-		timeout => Timeout
-	}.
-
-domain_lookup(_, {retries, Retries, _}, State=#state{host=Host, port=Port, opts=Opts,
-		event_handler=EvHandler, event_handler_state=EvHandlerState0}) ->
-	TransOpts = maps:get(tcp_opts, Opts, []),
-	DomainLookupTimeout = maps:get(domain_lookup_timeout, Opts, infinity),
-	DomainLookupEvent = #{
-		host => Host,
-		port => Port,
-		tcp_opts => TransOpts,
-		timeout => DomainLookupTimeout
-	},
-	EvHandlerState1 = EvHandler:domain_lookup_start(DomainLookupEvent, EvHandlerState0),
-	case gun_tcp:domain_lookup(Host, Port, TransOpts, DomainLookupTimeout) of
-		{ok, LookupInfo} ->
-			EvHandlerState = EvHandler:domain_lookup_end(DomainLookupEvent#{
-				lookup_info => LookupInfo
-			}, EvHandlerState1),
-			{next_state, connecting, State#state{event_handler_state=EvHandlerState},
-				{next_event, internal, {retries, Retries, LookupInfo}}};
-		{error, Reason} ->
-			EvHandlerState = EvHandler:domain_lookup_end(DomainLookupEvent#{
-				error => Reason
-			}, EvHandlerState1),
-			{next_state, not_connected, State#state{event_handler_state=EvHandlerState},
-				{next_event, internal, {retries, Retries, Reason}}}
-	end;
-domain_lookup({call, From}, {stream_info, _}, _) ->
-	{keep_state_and_data, {reply, From, {error, not_connected}}};
-domain_lookup(Type, Event, State) ->
-	handle_common(Type, Event, ?FUNCTION_NAME, State).
-
-connecting(_, {retries, Retries, LookupInfo}, State=#state{opts=Opts,
-		transport=Transport, event_handler=EvHandler, event_handler_state=EvHandlerState0}) ->
-	ConnectTimeout = maps:get(connect_timeout, Opts, infinity),
-	ConnectEvent = #{
-		lookup_info => LookupInfo,
-		timeout => ConnectTimeout
-	},
-	EvHandlerState1 = EvHandler:connect_start(ConnectEvent, EvHandlerState0),
-	case gun_tcp:connect(LookupInfo, ConnectTimeout) of
+connecting(_, {retries, Retries, _Reason}, State=#state{opts=Opts,
+		transport=Transport, host = Host, port = Port, proxy_connect = ProxyConnect, proxy_opts = ProxyOpts}) ->
+	ConnectTimeout = maps:get(connect_timeout, Opts, 35000),
+	ConnectOpts = format_proxy_opts(ProxyConnect, ProxyOpts, [binary, {active, false}, {packet, raw}]),
+	case ProxyConnect:connect(Host, Port, ConnectOpts, ConnectTimeout) of
 		{ok, Socket} when Transport =:= gun_tcp ->
 			[Protocol] = maps:get(protocols, Opts, [http]),
-			ProtocolName = case Protocol of
-				{P, _} -> P;
-				P -> P
-			end,
-			EvHandlerState = EvHandler:connect_end(ConnectEvent#{
-				socket => Socket,
-				protocol => ProtocolName
-			}, EvHandlerState1),
-			{next_state, connected, State#state{event_handler_state=EvHandlerState},
+			{next_state, connected, State#state{socket = Socket},
 				{next_event, internal, {connected, Socket, Protocol}}};
 		{ok, Socket} when Transport =:= gun_tls ->
-			EvHandlerState = EvHandler:connect_end(ConnectEvent#{
-				socket => Socket
-			}, EvHandlerState1),
-			{next_state, initial_tls_handshake, State#state{event_handler_state=EvHandlerState},
+			{next_state, initial_tls_handshake, State#state{socket = Socket},
 				{next_event, internal, {retries, Retries, Socket}}};
 		{error, Reason} ->
-			EvHandlerState = EvHandler:connect_end(ConnectEvent#{
-				error => Reason
-			}, EvHandlerState1),
-			{next_state, not_connected, State#state{event_handler_state=EvHandlerState},
+			{next_state, not_connected, State,
 				{next_event, internal, {retries, Retries, Reason}}}
 	end.
 
@@ -988,7 +928,7 @@ initial_tls_handshake(_, {retries, Retries, Socket}, State0=#state{opts=Opts}) -
 	Protocols = maps:get(protocols, Opts, [http2, http]),
 	HandshakeEvent = #{
 		tls_opts => ensure_alpn_sni(Protocols, maps:get(tls_opts, Opts, []), State0),
-		timeout => maps:get(tls_handshake_timeout, Opts, infinity)
+		timeout => maps:get(tls_handshake_timeout, Opts, 35000)
 	},
 	case normal_tls_handshake(Socket, State0, HandshakeEvent, Protocols) of
 		{ok, TLSSocket, Protocol, State} ->
@@ -1031,61 +971,21 @@ tls_handshake(internal, {tls_handshake, HandshakeEvent, Protocols, ReplyTo},
 		{error, Reason, State} ->
 			commands({error, Reason}, State)
 	end;
-%% TLS over TLS.
-tls_handshake(internal, {tls_handshake,
-		HandshakeEvent0=#{tls_opts := TLSOpts0, timeout := TLSTimeout}, Protocols, ReplyTo},
-		State=#state{socket=Socket, transport=Transport, origin_host=OriginHost, origin_port=OriginPort,
-		event_handler=EvHandler, event_handler_state=EvHandlerState0}) ->
-	TLSOpts = ensure_alpn_sni(Protocols, TLSOpts0, State),
-	HandshakeEvent = HandshakeEvent0#{
-		tls_opts => TLSOpts,
-		socket => Socket
-	},
-	EvHandlerState = EvHandler:tls_handshake_start(HandshakeEvent, EvHandlerState0),
-	{ok, ProxyPid} = gun_tls_proxy:start_link(OriginHost, OriginPort,
-		TLSOpts, TLSTimeout, Socket, Transport, {HandshakeEvent, Protocols, ReplyTo}),
-	commands([{switch_transport, gun_tls_proxy, ProxyPid}], State#state{
-		socket=ProxyPid, transport=gun_tls_proxy, event_handler_state=EvHandlerState});
-%% When using gun_tls_proxy we need a separate message to know whether
-%% the handshake succeeded and whether we need to switch to a different protocol.
-tls_handshake(info, {gun_tls_proxy, Socket, {ok, Negotiated}, {HandshakeEvent, Protocols, ReplyTo}},
-		State0=#state{socket=Socket, event_handler=EvHandler, event_handler_state=EvHandlerState0}) ->
-	NewProtocol = protocol_negotiated(Negotiated, Protocols),
-	EvHandlerState = EvHandler:tls_handshake_end(HandshakeEvent#{
-		socket => Socket,
-		protocol => NewProtocol
-	}, EvHandlerState0),
-	commands([{switch_protocol, NewProtocol, ReplyTo}], State0#state{event_handler_state=EvHandlerState});
-tls_handshake(info, {gun_tls_proxy, Socket, Error = {error, Reason}, {HandshakeEvent, _, _}},
-		State=#state{socket=Socket, event_handler=EvHandler, event_handler_state=EvHandlerState0}) ->
-	EvHandlerState = EvHandler:tls_handshake_end(HandshakeEvent#{
-		error => Reason
-	}, EvHandlerState0),
-	commands([Error], State#state{event_handler_state=EvHandlerState});
+
 tls_handshake(Type, Event, State) ->
 	handle_common_connected_no_input(Type, Event, ?FUNCTION_NAME, State).
 
-normal_tls_handshake(Socket, State=#state{event_handler=EvHandler, event_handler_state=EvHandlerState0},
-		HandshakeEvent0=#{tls_opts := TLSOpts0, timeout := TLSTimeout}, Protocols) ->
+normal_tls_handshake(Socket, State,
+		#{tls_opts := TLSOpts0, timeout := TLSTimeout}, Protocols) ->
 	TLSOpts = ensure_alpn_sni(Protocols, TLSOpts0, State),
-	HandshakeEvent = HandshakeEvent0#{
-		tls_opts => TLSOpts,
-		socket => Socket
-	},
-	EvHandlerState1 = EvHandler:tls_handshake_start(HandshakeEvent, EvHandlerState0),
+
 	case gun_tls:connect(Socket, TLSOpts, TLSTimeout) of
 		{ok, TLSSocket} ->
 			Protocol = protocol_negotiated(ssl:negotiated_protocol(TLSSocket), Protocols),
-			EvHandlerState = EvHandler:tls_handshake_end(HandshakeEvent#{
-				socket => TLSSocket,
-				protocol => Protocol
-			}, EvHandlerState1),
-			{ok, TLSSocket, Protocol, State#state{event_handler_state=EvHandlerState}};
+			{ok, TLSSocket, Protocol, State#state{socket = TLSSocket}};
 		{error, Reason} ->
-			EvHandlerState = EvHandler:tls_handshake_end(HandshakeEvent#{
-				error => Reason
-			}, EvHandlerState1),
-			{error, Reason, State#state{event_handler_state=EvHandlerState}}
+			gun_tcp:close(Socket),
+			{error, Reason, State#state{socket = undefined}}
 	end.
 
 protocol_negotiated({ok, <<"h2">>}, _) -> http2;
@@ -1109,10 +1009,9 @@ connected_data_only(Type, Event, State) ->
 	handle_common_connected(Type, Event, ?FUNCTION_NAME, State).
 
 connected_ws_only(cast, {ws_send, ReplyTo, Frames}, State=#state{
-		protocol=Protocol=gun_ws, protocol_state=ProtoState,
-		event_handler=EvHandler, event_handler_state=EvHandlerState0}) ->
-	{Commands, EvHandlerState} = Protocol:ws_send(Frames, ProtoState, ReplyTo, EvHandler, EvHandlerState0),
-	commands(Commands, State#state{event_handler_state=EvHandlerState});
+		protocol=Protocol=gun_ws, protocol_state=ProtoState}) ->
+	Commands = Protocol:ws_send(Frames, ProtoState, ReplyTo),
+	commands(Commands, State);
 connected_ws_only(cast, Msg, _)
 		when element(1, Msg) =:= headers; element(1, Msg) =:= request; element(1, Msg) =:= data;
 			element(1, Msg) =:= connect; element(1, Msg) =:= ws_upgrade ->
@@ -1144,24 +1043,21 @@ connected(internal, {connected, Socket, Protocol0},
 %%
 %% @todo It might be better, internally, to pass around a URIMap
 %% containing the target URI, instead of separate Host/Port/PathWithQs.
-connected(cast, {headers, ReplyTo, StreamRef, Method, Path, Headers0, InitialFlow},
-		State0=#state{origin_host=Host, origin_port=Port,
+connected(cast, {headers, ReplyTo, StreamRef, Method, Path, Headers, InitialFlow},
+		State=#state{origin_host=Host, origin_port=Port,
+			protocol=Protocol, protocol_state=ProtoState}) ->
+	ProtoState2 = Protocol:headers(ProtoState,
+		StreamRef, ReplyTo, Method, Host, Port, Path, Headers, InitialFlow),
+	{keep_state, State#state{protocol_state=ProtoState2}};
+connected(cast, {request, ReplyTo, StreamRef, Method, Path, Headers, Body, InitialFlow},
+		State=#state{origin_host=Host, origin_port=Port,
 			protocol=Protocol, protocol_state=ProtoState,
-			event_handler=EvHandler, event_handler_state=EvHandlerState0}) ->
-	{Headers, State} = add_cookie_header(Path, Headers0, State0),
-	{ProtoState2, EvHandlerState} = Protocol:headers(ProtoState,
-		StreamRef, ReplyTo, Method, Host, Port, Path, Headers,
-		InitialFlow, EvHandler, EvHandlerState0),
-	{keep_state, State#state{protocol_state=ProtoState2, event_handler_state=EvHandlerState}};
-connected(cast, {request, ReplyTo, StreamRef, Method, Path, Headers0, Body, InitialFlow},
-		State0=#state{origin_host=Host, origin_port=Port,
-			protocol=Protocol, protocol_state=ProtoState,
-			event_handler=EvHandler, event_handler_state=EvHandlerState0}) ->
-	{Headers, State} = add_cookie_header(Path, Headers0, State0),
-	{ProtoState2, EvHandlerState} = Protocol:request(ProtoState,
-		StreamRef, ReplyTo, Method, Host, Port, Path, Headers, Body,
-		InitialFlow, EvHandler, EvHandlerState0),
-	{keep_state, State#state{protocol_state=ProtoState2, event_handler_state=EvHandlerState}};
+			transport = Transport, opts = Opts, proxy_connect = ProxyConnect}) ->
+	{Path1, Headers1} = format_path_headers(Transport, ProxyConnect, Host, Port, Path, Headers, Opts),
+	ProtoState2 = Protocol:request(ProtoState,
+		StreamRef, ReplyTo, Method, Host, Port, Path1, Headers1, Body,
+		InitialFlow),
+	{keep_state, State#state{protocol_state=ProtoState2}};
 connected(cast, {connect, ReplyTo, StreamRef, Destination, Headers, InitialFlow},
 		State=#state{protocol=Protocol, protocol_state=ProtoState}) ->
 	ProtoState2 = Protocol:connect(ProtoState, StreamRef, ReplyTo, Destination, Headers, InitialFlow),
@@ -1172,23 +1068,14 @@ connected(cast, {connect, ReplyTo, StreamRef, Destination, Headers, InitialFlow}
 connected(cast, {ws_upgrade, ReplyTo, StreamRef, Path, Headers}, State=#state{opts=Opts}) ->
 	WsOpts = maps:get(ws_opts, Opts, #{}),
 	connected(cast, {ws_upgrade, ReplyTo, StreamRef, Path, Headers, WsOpts}, State);
-connected(cast, {ws_upgrade, ReplyTo, StreamRef, Path, Headers0, WsOpts},
-		State0=#state{origin_host=Host, origin_port=Port,
-			protocol=Protocol, protocol_state=ProtoState,
-			event_handler=EvHandler, event_handler_state=EvHandlerState0})
+connected(cast, {ws_upgrade, ReplyTo, StreamRef, Path, Headers, WsOpts},
+		State=#state{origin_host=Host, origin_port=Port,
+			protocol=Protocol, protocol_state=ProtoState})
 		when Protocol =:= gun_http ->
-	EvHandlerState1 = EvHandler:ws_upgrade(#{
-		stream_ref => StreamRef,
-		reply_to => ReplyTo,
-		opts => WsOpts
-	}, EvHandlerState0),
 	%% @todo Can fail if HTTP/1.0.
-	{Headers, State} = add_cookie_header(Path, Headers0, State0),
-	{ProtoState2, EvHandlerState} = Protocol:ws_upgrade(ProtoState,
-		StreamRef, ReplyTo, Host, Port, Path, Headers, WsOpts,
-		EvHandler, EvHandlerState1),
-	{keep_state, State#state{protocol_state=ProtoState2,
-		event_handler_state=EvHandlerState}};
+	ProtoState2 = Protocol:ws_upgrade(ProtoState,
+		StreamRef, ReplyTo, Host, Port, Path, Headers, WsOpts),
+	{keep_state, State#state{protocol_state=ProtoState2}};
 connected(cast, {ws_upgrade, ReplyTo, StreamRef, _, _, _}, _) ->
 	ReplyTo ! {gun_error, self(), StreamRef, {badstate,
 		"Websocket is only supported over HTTP/1.1."}},
@@ -1201,40 +1088,10 @@ connected(cast, {ws_send, ReplyTo, _}, _) ->
 connected(Type, Event, State) ->
 	handle_common_connected(Type, Event, ?FUNCTION_NAME, State).
 
-add_cookie_header(_, Headers, State=#state{cookie_store=undefined}) ->
-	{Headers, State};
-add_cookie_header(PathWithQs, Headers0, State=#state{
-		origin_host=OriginHost, transport=Transport, cookie_store=Store0}) ->
-	Scheme = case Transport of
-		gun_tls -> <<"https">>;
-		gun_tls_proxy -> <<"https">>;
-		gun_tcp -> <<"http">>
-	end,
-	#{path := Path} = uri_string:parse(PathWithQs),
-	URIMap = uri_string:normalize(#{
-		scheme => Scheme,
-		host => case lists:keyfind(<<"host">>, 1, Headers0) of
-			false -> iolist_to_binary(OriginHost); %% @todo Probably not enough for atoms and such.
-			{_, HeaderHost} -> iolist_to_binary(HeaderHost)
-		end,
-		path => iolist_to_binary(Path)
-	}, [return_map]),
-	{ok, Cookies0, Store} = gun_cookies:query(Store0, URIMap),
-	Headers = case Cookies0 of
-		[] ->
-			Headers0;
-		_ ->
-			Cookies = [{Name, Value} || #{name := Name, value := Value} <- Cookies0],
-			%% We put cookies at the end of the headers list as it's the least important header.
-			Headers0 ++ [{<<"cookie">>, cow_cookie:cookie(Cookies)}]
-	end,
-	{Headers, State#state{cookie_store=Store}}.
-
 %% Switch to the graceful connection close state.
-closing(State=#state{protocol=Protocol, protocol_state=ProtoState,
-		event_handler=EvHandler, event_handler_state=EvHandlerState0}, Reason) ->
-	{Commands, EvHandlerState} = Protocol:closing(Reason, ProtoState, EvHandler, EvHandlerState0),
-	commands(Commands, State#state{event_handler_state=EvHandlerState}).
+closing(State=#state{protocol=Protocol, protocol_state=ProtoState}, Reason) ->
+	Commands = Protocol:closing(Reason, ProtoState),
+	commands(Commands, State).
 
 %% @todo Should explicitly reject ws_send in this state?
 closing(state_timeout, closing_timeout, State=#state{status=Status}) ->
@@ -1254,11 +1111,9 @@ closing(Type, Event, State) ->
 %% @todo Do we want to reject ReplyTo if it's not the process
 %% who initiated the connection? For both data and cancel.
 handle_common_connected(cast, {data, ReplyTo, StreamRef, IsFin, Data}, _,
-		State=#state{protocol=Protocol, protocol_state=ProtoState,
-			event_handler=EvHandler, event_handler_state=EvHandlerState0}) ->
-	{ProtoState2, EvHandlerState} = Protocol:data(ProtoState,
-		StreamRef, ReplyTo, IsFin, Data, EvHandler, EvHandlerState0),
-	{keep_state, State#state{protocol_state=ProtoState2, event_handler_state=EvHandlerState}};
+		State=#state{protocol=Protocol, protocol_state=ProtoState}) ->
+	ProtoState2 = Protocol:data(ProtoState, StreamRef, ReplyTo, IsFin, Data),
+	{keep_state, State#state{protocol_state=ProtoState2}};
 handle_common_connected(info, {timeout, TRef, Name}, _,
 		State=#state{protocol=Protocol, protocol_state=ProtoState}) ->
 	Commands = Protocol:timeout(ProtoState, Name, TRef),
@@ -1269,10 +1124,9 @@ handle_common_connected(Type, Event, StateName, StateData) ->
 %% Socket events.
 handle_common_connected_no_input(info, {OK, Socket, Data}, _,
 		State0=#state{socket=Socket, messages={OK, _, _},
-		protocol=Protocol, protocol_state=ProtoState,
-		event_handler=EvHandler, event_handler_state=EvHandlerState0}) ->
-	{Commands, EvHandlerState} = Protocol:handle(Data, ProtoState, EvHandler, EvHandlerState0),
-	case commands(Commands, State0#state{event_handler_state=EvHandlerState}) of
+		protocol=Protocol, protocol_state=ProtoState}) ->
+	Commands = Protocol:handle(Data, ProtoState),
+	case commands(Commands, State0) of
 		{keep_state, State} ->
 			{keep_state, active(State)};
 		{next_state, closing, State, Actions} ->
@@ -1291,11 +1145,10 @@ handle_common_connected_no_input(info, {Error, Socket, Reason}, _,
 %% We should have a timeout function in protocols that deal with
 %% received timeouts. Currently the timeout messages are ignored.
 handle_common_connected_no_input(info, keepalive, _,
-		State=#state{protocol=Protocol, protocol_state=ProtoState0,
-		event_handler=EvHandler, event_handler_state=EvHandlerState0}) ->
-	{ProtoState, EvHandlerState} = Protocol:keepalive(ProtoState0, EvHandler, EvHandlerState0),
+		State=#state{protocol=Protocol, protocol_state=ProtoState0}) ->
+	ProtoState = Protocol:keepalive(ProtoState0),
 	{keep_state, keepalive_timeout(State#state{
-		protocol_state=ProtoState, event_handler_state=EvHandlerState})};
+		protocol_state=ProtoState})};
 handle_common_connected_no_input(cast, {update_flow, ReplyTo, StreamRef, Flow}, _,
 		State0=#state{protocol=Protocol, protocol_state=ProtoState}) ->
 	Commands = Protocol:update_flow(ProtoState, ReplyTo, StreamRef, Flow),
@@ -1306,11 +1159,9 @@ handle_common_connected_no_input(cast, {update_flow, ReplyTo, StreamRef, Flow}, 
 			Res
 	end;
 handle_common_connected_no_input(cast, {cancel, ReplyTo, StreamRef}, _,
-		State=#state{protocol=Protocol, protocol_state=ProtoState,
-		event_handler=EvHandler, event_handler_state=EvHandlerState0}) ->
-	{ProtoState2, EvHandlerState} = Protocol:cancel(ProtoState,
-		StreamRef, ReplyTo, EvHandler, EvHandlerState0),
-	{keep_state, State#state{protocol_state=ProtoState2, event_handler_state=EvHandlerState}};
+		State=#state{protocol=Protocol, protocol_state=ProtoState}) ->
+	ProtoState2 = Protocol:cancel(ProtoState, StreamRef, ReplyTo),
+	{keep_state, State#state{protocol_state=ProtoState2}};
 handle_common_connected_no_input({call, From}, {stream_info, StreamRef}, _,
 		#state{protocol=Protocol, protocol_state=ProtoState}) ->
 	{keep_state_and_data, {reply, From, Protocol:stream_info(ProtoState, StreamRef)}};
@@ -1390,54 +1241,10 @@ commands([{active, Active}|Tail], State) when is_boolean(Active) ->
 	commands(Tail, State#state{active=Active});
 commands([{state, ProtoState}|Tail], State) ->
 	commands(Tail, State#state{protocol_state=ProtoState});
-%% Don't set cookies when cookie store isn't configured.
-commands([{set_cookie, _, _, _, _}|Tail], State=#state{cookie_store=undefined}) ->
-	commands(Tail, State);
-%% Ignore cookies set on informational responses when configured to do so.
-%% This includes cookies set to Websocket upgrade responses!
-commands([{set_cookie, _, _, Status, _}|Tail], State=#state{opts=#{cookie_ignore_informational := true}})
-		when Status >= 100, Status =< 199 ->
-	commands(Tail, State);
-commands([{set_cookie, Authority, PathWithQs, _, Headers}|Tail], State=#state{
-			transport=Transport, cookie_store=Store0}) ->
-	Scheme = case Transport of
-		gun_tls -> <<"https">>;
-		gun_tls_proxy -> <<"https">>;
-		gun_tcp -> <<"http">>
-	end,
-	%% @todo Not sure if this is best done here or in the protocol code or elsewhere.
-	#{host := Host, path := Path} = uri_string:parse([Scheme, <<"://">>, Authority, PathWithQs]),
-	URIMap = uri_string:normalize(#{
-		scheme => Scheme,
-		host => iolist_to_binary(Host),
-		path => iolist_to_binary(Path)
-	}, [return_map]),
-	SetCookies = [SC || {<<"set-cookie">>, SC} <- Headers],
-	Store = lists:foldl(fun(SC, Store1) ->
-		case cow_cookie:parse_set_cookie(SC) of
-			{ok, N, V, A} ->
-				case gun_cookies:set_cookie(Store1, URIMap, N, V, A) of
-					{ok, Store2} -> Store2;
-					{error, _} -> Store1
-				end;
-			ignore ->
-				Store1
-		end
-	end, Store0, SetCookies),
-	commands(Tail, State#state{cookie_store=Store});
-%% Order is important: the origin must be changed before
-%% the transport and/or protocol in order to keep track
-%% of the intermediaries properly.
+%% remove cookie
 commands([{origin, Scheme, Host, Port, Type}|Tail],
 		State=#state{transport=Transport, protocol=Protocol,
-			origin_host=IntermediateHost, origin_port=IntermediatePort, intermediaries=Intermediaries,
-			event_handler=EvHandler, event_handler_state=EvHandlerState0}) ->
-	EvHandlerState = EvHandler:origin_changed(#{
-		type => Type,
-		origin_scheme => Scheme,
-		origin_host => Host,
-		origin_port => Port
-	}, EvHandlerState0),
+			origin_host=IntermediateHost, origin_port=IntermediatePort, intermediaries=Intermediaries}) ->
 	Info = #{
 		type => Type,
 		host => IntermediateHost,
@@ -1446,22 +1253,14 @@ commands([{origin, Scheme, Host, Port, Type}|Tail],
 		protocol => Protocol:name()
 	},
 	commands(Tail, State#state{origin_scheme=Scheme,
-		origin_host=Host, origin_port=Port, intermediaries=[Info|Intermediaries],
-		event_handler_state=EvHandlerState});
+		origin_host=Host, origin_port=Port, intermediaries=[Info|Intermediaries]});
 commands([{switch_transport, Transport, Socket}|Tail], State=#state{
-		protocol=Protocol, protocol_state=ProtoState0,
-		event_handler=EvHandler, event_handler_state=EvHandlerState0}) ->
+		protocol=Protocol, protocol_state=ProtoState0}) ->
 	ProtoState = Protocol:switch_transport(Transport, Socket, ProtoState0),
-	EvHandlerState = EvHandler:transport_changed(#{
-		socket => Socket,
-		transport => Transport:name()
-	}, EvHandlerState0),
 	commands(Tail, active(State#state{socket=Socket, transport=Transport,
-		messages=Transport:messages(), protocol_state=ProtoState,
-		event_handler_state=EvHandlerState}));
+		messages=Transport:messages(), protocol_state=ProtoState}));
 commands([{switch_protocol, Protocol0, ReplyTo}], State0=#state{
-		opts=Opts, socket=Socket, transport=Transport, protocol=CurrentProtocol,
-		event_handler=EvHandler, event_handler_state=EvHandlerState0}) ->
+		opts=Opts, socket=Socket, transport=Transport, protocol=CurrentProtocol}) ->
 	{Protocol, ProtoOpts} = case Protocol0 of
 		{P, PO} -> {protocol_handler(P), PO};
 		P ->
@@ -1474,11 +1273,9 @@ commands([{switch_protocol, Protocol0, ReplyTo}], State0=#state{
 		_ -> ok
 	end,
 	{StateName, ProtoState} = Protocol:init(ReplyTo, Socket, Transport, ProtoOpts),
-	EvHandlerState = EvHandler:protocol_changed(#{protocol => Protocol:name()}, EvHandlerState0),
 	%% We cancel the existing keepalive and, depending on the protocol,
 	%% we enable keepalive again, effectively resetting the timer.
-	State = keepalive_cancel(active(State0#state{protocol=Protocol, protocol_state=ProtoState,
-		event_handler_state=EvHandlerState})),
+	State = keepalive_cancel(active(State0#state{protocol=Protocol, protocol_state=ProtoState})),
 	case Protocol:has_keepalive() of
 		true -> {next_state, StateName, keepalive_timeout(State)};
 		false -> {next_state, StateName, State}
@@ -1490,12 +1287,10 @@ commands([TLSHandshake={tls_handshake, _, _, _}], State) ->
 
 disconnect(State0=#state{owner=Owner, status=Status, opts=Opts,
 		socket=Socket, transport=Transport,
-		protocol=Protocol, protocol_state=ProtoState,
-		event_handler=EvHandler, event_handler_state=EvHandlerState0}, Reason) ->
-	EvHandlerState1 = Protocol:close(Reason, ProtoState, EvHandler, EvHandlerState0),
-	_ = Transport:close(Socket),
-	EvHandlerState = EvHandler:disconnect(#{reason => Reason}, EvHandlerState1),
-	State = State0#state{event_handler_state=EvHandlerState},
+		protocol=Protocol, protocol_state=ProtoState}, Reason) ->
+	Protocol:close(Reason, ProtoState),
+	Transport:close(Socket),
+	State = State0#state{socket = undefined},
 	case Status of
 		{down, DownReason} ->
 			owner_down(DownReason, State);
@@ -1507,7 +1302,7 @@ disconnect(State0=#state{owner=Owner, status=Status, opts=Opts,
 			%% @todo Stop keepalive timeout, flush message.
 			KilledStreams = Protocol:down(ProtoState),
 			Owner ! {gun_down, self(), Protocol:name(), Reason, KilledStreams},
-			Retry = maps:get(retry, Opts, 5),
+			Retry = maps:get(retry, Opts, 0),
 			{next_state, not_connected,
 				keepalive_cancel(State#state{socket=undefined,
 					protocol=undefined, protocol_state=undefined}),
@@ -1568,16 +1363,70 @@ owner_down(shutdown, State) -> {stop, shutdown, State};
 owner_down(Shutdown = {shutdown, _}, State) -> {stop, Shutdown, State};
 owner_down(Reason, State) -> {stop, {shutdown, {owner_down, Reason}}, State}.
 
-terminate(Reason, StateName, #state{event_handler=EvHandler,
-		event_handler_state=EvHandlerState, cookie_store=Store}) ->
-	_ = case Store of
-		undefined -> ok;
-		%% Optimization: gun_cookies_list isn't a persistent cookie store.
-		{gun_cookies_list, _} -> ok;
-		_ -> gun_cookies:session_gc(Store)
+terminate(_Reason, _StateName, #state{socket = Socket, transport = Transport}) ->
+	if
+		is_port(Socket) -> Transport:close(Socket);
+		true -> ok
 	end,
-	TerminateEvent = #{
-		state => StateName,
-		reason => Reason
-	},
-	EvHandler:terminate(TerminateEvent, EvHandlerState).
+	gun_stats:update_counter(active_connection, -1),
+	gun_stats:del_connection(self()),
+	ok.
+
+%% PATCH LIB
+
+selective_loop_receive(HibernateAfterTimeout) ->
+	receive
+		{'$gen_cast', {shutdown, _}} = Msg ->
+			Msg;
+    Msg ->
+      Msg
+  after
+    HibernateAfterTimeout ->
+			{receive_empty, true}
+  end.
+
+
+get_proxy_auth(Opts) ->
+	case maps:get(proxy_auth, Opts) of
+		{U, P} -> {U, P};
+		_ -> {undefined, undefined}
+	end.
+
+select_http_proxy(gun_tcp, _ProxyOpts, ProxyHost, ProxyPort) -> {gun_tcp, [], ProxyHost, ProxyPort};
+select_http_proxy(_, ProxyOpts, ProxyHost, ProxyPort) -> {gun_http_proxy, ProxyOpts, ProxyHost, ProxyPort}.
+
+format_path_headers(gun_tcp, ProxyConnect, OriginHost, OriginPort, Path, Headers, Opts) ->
+	case maps:get(proxy_auth, Opts, undefined) of
+		{U, P} when ProxyConnect == gun_http_proxy ->
+			{add_host_to_path(OriginHost, OriginPort, Path), add_proxy_authorization(U, P, Headers)};
+		_ ->
+			{Path, Headers}
+	end.
+
+add_host_to_path(OriginHost, OriginPort, Path) ->
+	case OriginPort of
+		80 ->
+			iolist_to_binary([<<"http://">>, OriginHost, Path]);
+		_ ->
+			iolist_to_binary([<<"http://">>, OriginHost, integer_to_binary(OriginPort), Path])
+	end.
+
+add_proxy_authorization(ProxyUser, ProxyPass, Headers) ->
+	HasProxyAuthorization = lists:keymember(<<"proxy-authorization">>, 1, Headers),
+	case HasProxyAuthorization of
+		false ->
+			Credentials = base64:encode(<<ProxyUser/binary, ":", ProxyPass/binary>>),
+			[{<<"proxy-authorization">>, [<<"Basic ">>, Credentials]} | Headers];
+		true ->
+			Headers
+	end.
+
+format_proxy_opts(ProxyConnect, ProxyOpts, TransOpts) ->
+  case ProxyConnect of
+    gun_http_proxy ->
+      [{tcp_opt, TransOpts}| ProxyOpts];
+    gun_socks5_proxy ->
+      [{tcp_opt, TransOpts}| ProxyOpts];
+    gun_tcp ->
+      TransOpts
+  end.

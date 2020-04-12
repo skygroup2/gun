@@ -21,19 +21,19 @@
 -export([default_keepalive/0]).
 -export([init/4]).
 -export([switch_transport/3]).
--export([handle/4]).
+-export([handle/2]).
 -export([update_flow/4]).
--export([closing/4]).
--export([close/4]).
--export([keepalive/3]).
--export([headers/11]).
--export([request/12]).
--export([data/7]).
+-export([closing/2]).
+-export([close/2]).
+-export([keepalive/1]).
+-export([headers/9]).
+-export([request/10]).
+-export([data/5]).
 -export([connect/6]).
--export([cancel/5]).
+-export([cancel/3]).
 -export([stream_info/2]).
 -export([down/1]).
--export([ws_upgrade/10]).
+-export([ws_upgrade/8]).
 
 %% Functions shared with gun_http2.
 -export([host_header/3]).
@@ -130,189 +130,142 @@ handle_ret(Command, #http_state{commands_queue=Queue}) ->
 	lists:reverse([Command|Queue]).
 
 %% Stop looping when we got no more data.
-handle(<<>>, State, _, EvHandlerState) ->
-	{handle_ret({state, State}, State), EvHandlerState};
+handle(<<>>, State) ->
+	handle_ret({state, State}, State);
 %% Close when server responds and we don't have any open streams.
-handle(_, State=#http_state{streams=[]}, _, EvHandlerState) ->
-	{handle_ret(close, State), EvHandlerState};
+handle(_, State=#http_state{streams=[]}) ->
+	handle_ret(close, State);
 %% Wait for the full response headers before trying to parse them.
 handle(Data, State=#http_state{in=head, buffer=Buffer,
-		streams=[#stream{ref=StreamRef, reply_to=ReplyTo}|_]}, EvHandler, EvHandlerState0) ->
+		streams=[#stream{}|_]}) ->
 	%% Send the event only if there was no data in the buffer.
 	%% If there is data in the buffer then we already sent the event.
-	EvHandlerState = case Buffer of
-		<<>> ->
-			EvHandler:response_start(#{
-				stream_ref => stream_ref(StreamRef),
-				reply_to => ReplyTo
-			}, EvHandlerState0);
-		_ ->
-			EvHandlerState0
-	end,
 	Data2 = << Buffer/binary, Data/binary >>,
 	case binary:match(Data2, <<"\r\n\r\n">>) of
-		nomatch -> {handle_ret({state, State#http_state{buffer=Data2}}, State), EvHandlerState};
-		{_, _} -> handle_head(Data2, State#http_state{buffer= <<>>}, EvHandler, EvHandlerState)
+		nomatch -> handle_ret({state, State#http_state{buffer=Data2}}, State);
+		{_, _} -> handle_head(Data2, State#http_state{buffer= <<>>})
 	end;
 %% Everything sent to the socket until it closes is part of the response body.
-handle(Data, State=#http_state{in=body_close}, _, EvHandlerState) ->
-	{handle_ret(send_data(Data, State, nofin), State), EvHandlerState};
+handle(Data, State=#http_state{in=body_close}) ->
+	handle_ret(send_data(Data, State, nofin), State);
 %% Chunked transfer-encoding may contain both data and trailers.
 handle(Data, State=#http_state{in=body_chunked, in_state=InState,
-		buffer=Buffer, streams=[#stream{ref=StreamRef, reply_to=ReplyTo}|_],
-		connection=Conn}, EvHandler, EvHandlerState0) ->
+		buffer=Buffer, streams=[#stream{}|_],
+		connection=Conn}) ->
 	Buffer2 = << Buffer/binary, Data/binary >>,
 	case cow_http_te:stream_chunked(Buffer2, InState) of
 		more ->
-			{handle_ret({state, State#http_state{buffer=Buffer2}}, State), EvHandlerState0};
+			handle_ret({state, State#http_state{buffer=Buffer2}}, State);
 		{more, Data2, InState2} ->
-			{handle_ret(send_data(Data2, State#http_state{buffer= <<>>, in_state=InState2}, nofin), State),
-				EvHandlerState0};
+			handle_ret(send_data(Data2, State#http_state{buffer= <<>>, in_state=InState2}, nofin), State);
 		{more, Data2, Length, InState2} when is_integer(Length) ->
 			%% @todo See if we can recv faster than one message at a time.
-			{handle_ret(send_data(Data2, State#http_state{buffer= <<>>, in_state=InState2}, nofin), State),
-				EvHandlerState0};
+			handle_ret(send_data(Data2, State#http_state{buffer= <<>>, in_state=InState2}, nofin), State);
 		{more, Data2, Rest, InState2} ->
 			%% @todo See if we can recv faster than one message at a time.
-			{handle_ret(send_data(Data2, State#http_state{buffer=Rest, in_state=InState2}, nofin), State),
-				EvHandlerState0};
+			handle_ret(send_data(Data2, State#http_state{buffer=Rest, in_state=InState2}, nofin), State);
 		{done, HasTrailers, Rest} ->
 			%% @todo response_end should be called AFTER send_data
-			{IsFin, EvHandlerState} = case HasTrailers of
-				trailers ->
-					{nofin, EvHandlerState0};
-				no_trailers ->
-					EvHandlerState1 = EvHandler:response_end(#{
-						stream_ref => StreamRef,
-						reply_to => ReplyTo
-					}, EvHandlerState0),
-					{fin, EvHandlerState1}
+			IsFin = case HasTrailers of
+				trailers -> nofin;
+				no_trailers -> fin
 			end,
 			%% I suppose it doesn't hurt to append an empty binary.
 			%% We ignore the active command because the stream ended.
 			[{state, State1}|_] = send_data(<<>>, State, IsFin),
 			case {HasTrailers, Conn} of
 				{trailers, _} ->
-					handle(Rest, State1#http_state{buffer = <<>>, in=body_trailer}, EvHandler, EvHandlerState);
+					handle(Rest, State1#http_state{buffer = <<>>, in=body_trailer});
 				{no_trailers, keepalive} ->
-					handle(Rest, end_stream(State1#http_state{buffer= <<>>}), EvHandler, EvHandlerState);
+					handle(Rest, end_stream(State1#http_state{buffer= <<>>}));
 				{no_trailers, close} ->
-					{handle_ret([{state, end_stream(State1)}, close], State1), EvHandlerState}
+					handle_ret([{state, end_stream(State1)}, close], State1)
 			end;
 		{done, Data2, HasTrailers, Rest} ->
 			%% @todo response_end should be called AFTER send_data
-			{IsFin, EvHandlerState} = case HasTrailers of
-				trailers ->
-					{nofin, EvHandlerState0};
-				no_trailers ->
-					EvHandlerState1 = EvHandler:response_end(#{
-						stream_ref => StreamRef,
-						reply_to => ReplyTo
-					}, EvHandlerState0),
-					{fin, EvHandlerState1}
+			IsFin = case HasTrailers of
+				trailers -> nofin;
+				no_trailers -> fin
 			end,
 			%% We ignore the active command because the stream ended.
 			[{state, State1}|_] = send_data(Data2, State, IsFin),
 			case {HasTrailers, Conn} of
 				{trailers, _} ->
-					handle(Rest, State1#http_state{buffer = <<>>, in=body_trailer}, EvHandler, EvHandlerState);
+					handle(Rest, State1#http_state{buffer = <<>>, in=body_trailer});
 				{no_trailers, keepalive} ->
-					handle(Rest, end_stream(State1#http_state{buffer= <<>>}), EvHandler, EvHandlerState);
+					handle(Rest, end_stream(State1#http_state{buffer= <<>>}));
 				{no_trailers, close} ->
-					{handle_ret([{state, end_stream(State1)}, close], State1), EvHandlerState}
+					handle_ret([{state, end_stream(State1)}, close], State1)
 			end
 	end;
 handle(Data, State=#http_state{in=body_trailer, buffer=Buffer, connection=Conn,
-		streams=[#stream{ref=StreamRef, reply_to=ReplyTo}|_]}, EvHandler, EvHandlerState0) ->
+		streams=[#stream{ref=StreamRef, reply_to=ReplyTo}|_]}) ->
 	Data2 = << Buffer/binary, Data/binary >>,
 	case binary:match(Data2, <<"\r\n\r\n">>) of
 		nomatch ->
-			{handle_ret({state, State#http_state{buffer=Data2}}, State), EvHandlerState0};
+			handle_ret({state, State#http_state{buffer=Data2}}, State);
 		{_, _} ->
 			{Trailers, Rest} = cow_http:parse_headers(Data2),
 			%% @todo We probably want to pass this to gun_content_handler?
 			ReplyTo ! {gun_trailers, self(), stream_ref(StreamRef), Trailers},
-			ResponseEvent = #{
-				stream_ref => StreamRef,
-				reply_to => ReplyTo
-			},
-			EvHandlerState1 = EvHandler:response_trailers(ResponseEvent#{headers => Trailers}, EvHandlerState0),
-			EvHandlerState = EvHandler:response_end(ResponseEvent, EvHandlerState1),
 			case Conn of
 				keepalive ->
-					handle(Rest, end_stream(State#http_state{buffer= <<>>}), EvHandler, EvHandlerState);
+					handle(Rest, end_stream(State#http_state{buffer= <<>>}));
 				close ->
-					{handle_ret([{state, end_stream(State)}, close], State), EvHandlerState}
+					handle_ret([{state, end_stream(State)}, close], State)
 			end
 	end;
 %% We know the length of the rest of the body.
 handle(Data, State=#http_state{in={body, Length}, connection=Conn,
-		streams=[#stream{ref=StreamRef, reply_to=ReplyTo}|_]},
-		EvHandler, EvHandlerState0) ->
+		streams=[#stream{}|_]}) ->
 	DataSize = byte_size(Data),
 	if
 		%% More data coming.
 		DataSize < Length ->
-			{handle_ret(send_data(Data, State#http_state{in={body, Length - DataSize}}, nofin), State),
-				EvHandlerState0};
+			handle_ret(send_data(Data, State#http_state{in={body, Length - DataSize}}, nofin), State);
 		%% Stream finished, no rest.
 		DataSize =:= Length ->
 			%% We ignore the active command because the stream ended.
 			[{state, State1}|_] = send_data(Data, State, fin),
-			EvHandlerState = EvHandler:response_end(#{
-				stream_ref => StreamRef,
-				reply_to => ReplyTo
-			}, EvHandlerState0),
 			case Conn of
 				keepalive ->
-					{handle_ret([{state, end_stream(State1)}, {active, true}], State1), EvHandlerState};
+					handle_ret([{state, end_stream(State1)}, {active, true}], State1);
 				close ->
-					{handle_ret([{state, end_stream(State1)}, close], State1), EvHandlerState}
+					handle_ret([{state, end_stream(State1)}, close], State1)
 			end;
 		%% Stream finished, rest.
 		true ->
 			<< Body:Length/binary, Rest/bits >> = Data,
 			%% We ignore the active command because the stream ended.
 			[{state, State1}|_] = send_data(Body, State, fin),
-			EvHandlerState = EvHandler:response_end(#{
-				stream_ref => StreamRef,
-				reply_to => ReplyTo
-			}, EvHandlerState0),
 			case Conn of
-				keepalive -> handle(Rest, end_stream(State1), EvHandler, EvHandlerState);
-				close -> {handle_ret([{state, end_stream(State1)}, close], State1), EvHandlerState}
+				keepalive -> handle(Rest, end_stream(State1));
+				close -> handle_ret([{state, end_stream(State1)}, close], State1)
 			end
 	end.
 
 handle_head(Data, State0=#http_state{streams=[#stream{ref=StreamRef, authority=Authority, path=Path}|_],
-		commands_queue=Commands}, EvHandler, EvHandlerState) ->
+		commands_queue=Commands}) ->
 	{Version, Status, _, Rest0} = cow_http:parse_status_line(Data),
 	{Headers, Rest} = cow_http:parse_headers(Rest0),
 	State = State0#http_state{commands_queue=[{set_cookie, Authority, Path, Status, Headers}|Commands]},
 	case StreamRef of
 		{connect, _, _} when Status >= 200, Status < 300 ->
-			handle_connect(Rest, State, EvHandler, EvHandlerState, Version, Status, Headers);
+			handle_connect(Rest, State, Version, Status, Headers);
 		_ when Status >= 100, Status =< 199 ->
-			handle_inform(Rest, State, EvHandler, EvHandlerState, Version, Status, Headers);
+			handle_inform(Rest, State, Version, Status, Headers);
 		_ ->
-			handle_response(Rest, State, EvHandler, EvHandlerState, Version, Status, Headers)
+			handle_response(Rest, State, Version, Status, Headers)
 	end.
 
 handle_connect(Rest, State=#http_state{
 		streams=[Stream=#stream{ref={_, StreamRef, Destination}, reply_to=ReplyTo}|Tail]},
-		EvHandler, EvHandlerState0, 'HTTP/1.1', Status, Headers) ->
+		'HTTP/1.1', Status, Headers) ->
 	%% @todo If the stream is cancelled we probably shouldn't finish the CONNECT setup.
 	_ = case Stream of
 		#stream{is_alive=false} -> ok;
 		_ -> ReplyTo ! {gun_response, self(), StreamRef, fin, Status, Headers}
 	end,
-	%% @todo Figure out whether the event should trigger if the stream was cancelled.
-	EvHandlerState1 = EvHandler:response_headers(#{
-		stream_ref => StreamRef,
-		reply_to => ReplyTo,
-		status => Status,
-		headers => Headers
-	}, EvHandlerState0),
 	%% We expect there to be no additional data after the CONNECT response.
 	%% @todo That's probably wrong.
 	<<>> = Rest,
@@ -328,32 +281,26 @@ handle_connect(Rest, State=#http_state{
 				timeout => maps:get(tls_handshake_timeout, Destination, infinity)
 			},
 			Protocols = maps:get(protocols, Destination, [http2, http]),
-			{handle_ret([
+			handle_ret([
 				{origin, <<"https">>, NewHost, NewPort, connect},
 				{tls_handshake, HandshakeEvent, Protocols, ReplyTo}
-			], State), EvHandlerState1};
+			], State);
 		_ ->
 			[Protocol] = maps:get(protocols, Destination, [http]),
-			{handle_ret([
+			handle_ret([
 				{origin, <<"http">>, NewHost, NewPort, connect},
 				{switch_protocol, Protocol, ReplyTo}
-			], State), EvHandlerState1}
+			], State)
 	end.
 
 %% @todo We probably shouldn't send info messages if the stream is not alive.
 handle_inform(Rest, State=#http_state{
 		streams=[#stream{ref=StreamRef, reply_to=ReplyTo}|_]},
-		EvHandler, EvHandlerState0, Version, Status, Headers) ->
-	EvHandlerState = EvHandler:response_inform(#{
-		stream_ref => stream_ref(StreamRef),
-		reply_to => ReplyTo,
-		status => Status,
-		headers => Headers
-	}, EvHandlerState0),
+		Version, Status, Headers) ->
 	%% @todo We might want to switch to the HTTP/2 protocol or to the TLS transport as well.
 	case {Version, Status, StreamRef} of
 		{'HTTP/1.1', 101, #websocket{}} ->
-			{handle_ret(ws_handshake(Rest, State, StreamRef, Headers), State), EvHandlerState};
+			handle_ret(ws_handshake(Rest, State, StreamRef, Headers), State);
 		%% Any other 101 response results in us switching to the raw protocol.
 		%% @todo We should check that we asked for an upgrade before accepting it.
 		{'HTTP/1.1', 101, _} when is_reference(StreamRef) ->
@@ -362,52 +309,37 @@ handle_inform(Rest, State=#http_state{
 				{_, Upgrade0} = lists:keyfind(<<"upgrade">>, 1, Headers),
 				Upgrade = cow_http_hd:parse_upgrade(Upgrade0),
 				ReplyTo ! {gun_upgrade, self(), StreamRef, Upgrade, Headers},
-				{handle_ret({switch_protocol, raw, ReplyTo}, State), EvHandlerState0}
+				handle_ret({switch_protocol, raw, ReplyTo}, State)
 			catch _:_ ->
 				%% When the Upgrade header is missing or invalid we treat
 				%% the response as any other informational response.
 				ReplyTo ! {gun_inform, self(), stream_ref(StreamRef), Status, Headers},
-				handle(Rest, State, EvHandler, EvHandlerState)
+				handle(Rest, State)
 			end;
 		_ ->
 			ReplyTo ! {gun_inform, self(), stream_ref(StreamRef), Status, Headers},
-			handle(Rest, State, EvHandler, EvHandlerState)
+			handle(Rest, State)
 	end.
 
 handle_response(Rest, State=#http_state{version=ClientVersion, opts=Opts, connection=Conn,
 		streams=[Stream=#stream{ref=StreamRef, reply_to=ReplyTo, method=Method, is_alive=IsAlive}|Tail]},
-		EvHandler, EvHandlerState0, Version, Status, Headers) ->
+		Version, Status, Headers) ->
 	In = response_io_from_headers(Method, Version, Status, Headers),
 	IsFin = case In of head -> fin; _ -> nofin end,
 	%% @todo Figure out whether the event should trigger if the stream was cancelled.
-	{Handlers, EvHandlerState2} = case IsAlive of
+	Handlers = case IsAlive of
 		false ->
-			{undefined, EvHandlerState0};
+			undefined;
 		true ->
 			ReplyTo ! {gun_response, self(), stream_ref(StreamRef),
 				IsFin, Status, Headers},
-			EvHandlerState1 = EvHandler:response_headers(#{
-				stream_ref => StreamRef,
-				reply_to => ReplyTo,
-				status => Status,
-				headers => Headers
-			}, EvHandlerState0),
 			case IsFin of
-				fin -> {undefined, EvHandlerState1};
+				fin -> undefined;
 				nofin ->
 					Handlers0 = maps:get(content_handlers, Opts, [gun_data_h]),
-					{gun_content_handler:init(ReplyTo, stream_ref(StreamRef),
-						Status, Headers, Handlers0), EvHandlerState1}
+					gun_content_handler:init(ReplyTo, stream_ref(StreamRef),
+						Status, Headers, Handlers0)
 			end
-	end,
-	EvHandlerState = case IsFin of
-		nofin ->
-			EvHandlerState2;
-		fin ->
-			EvHandler:response_end(#{
-				stream_ref => StreamRef,
-				reply_to => ReplyTo
-			}, EvHandlerState2)
 	end,
 	Conn2 = if
 		Conn =:= close -> close;
@@ -418,17 +350,15 @@ handle_response(Rest, State=#http_state{version=ClientVersion, opts=Opts, connec
 	%% We always reset in_state even if not chunked.
 	if
 		IsFin =:= fin, Conn2 =:= close ->
-			{handle_ret(close, State), EvHandlerState};
+			handle_ret(close, State);
 		IsFin =:= fin ->
 			handle(Rest, end_stream(State#http_state{in=In,
 				in_state={0, 0}, connection=Conn2,
-				streams=[Stream#stream{handler_state=Handlers}|Tail]}),
-				EvHandler, EvHandlerState);
+				streams=[Stream#stream{handler_state=Handlers}|Tail]}));
 		true ->
 			handle(Rest, State#http_state{in=In,
 				in_state={0, 0}, connection=Conn2,
-				streams=[Stream#stream{handler_state=Handlers}|Tail]},
-				EvHandler, EvHandlerState)
+				streams=[Stream#stream{handler_state=Handlers}|Tail]})
 	end.
 
 stream_ref({connect, StreamRef, _}) -> StreamRef;
@@ -474,34 +404,28 @@ update_flow(State=#http_state{streams=Streams0}, _ReplyTo, StreamRef, Inc) ->
 	{state, State#http_state{streams=Streams}}.
 
 %% We can immediately close the connection when there's no streams.
-closing(_, #http_state{streams=[]}, _, EvHandlerState) ->
-	{close, EvHandlerState};
+closing(_, #http_state{streams=[]}) ->
+	close;
 %% Otherwise we set connection: close (even if the header was not sent)
 %% and close any pipelined streams, only keeping the active stream.
-closing(Reason, State=#http_state{streams=[LastStream|Tail]}, _, EvHandlerState) ->
+closing(Reason, State=#http_state{streams=[LastStream|Tail]}) ->
 	close_streams(Tail, {closing, Reason}),
-	{[
+	[
 		{state, State#http_state{connection=close, streams=[LastStream]}},
 		closing(State)
-	], EvHandlerState}.
+	].
 
 closing(#http_state{opts=Opts}) ->
 	Timeout = maps:get(closing_timeout, Opts, 15000),
 	{closing, Timeout}.
 
 close(Reason, State=#http_state{in=body_close,
-		streams=[#stream{ref=StreamRef, reply_to=ReplyTo}|Tail]},
-		EvHandler, EvHandlerState) ->
+		streams=[#stream{}|Tail]}) ->
 	%% We may have more than one stream in case we somehow close abruptly.
 	close_streams(Tail, close_reason(Reason)),
-	_ = send_data(<<>>, State, fin),
-	EvHandler:response_end(#{
-		stream_ref => StreamRef,
-		reply_to => ReplyTo
-	}, EvHandlerState);
-close(Reason, #http_state{streams=Streams}, _, EvHandlerState) ->
-	close_streams(Streams, close_reason(Reason)),
-	EvHandlerState.
+	send_data(<<>>, State, fin);
+close(Reason, #http_state{streams=Streams}) ->
+	close_streams(Streams, close_reason(Reason)).
 
 close_reason(closed) -> closed;
 close_reason(Reason) -> {closed, Reason}.
@@ -516,41 +440,41 @@ close_streams([#stream{ref=StreamRef, reply_to=ReplyTo}|Tail], Reason) ->
 	close_streams(Tail, Reason).
 
 %% We don't send a keep-alive when a CONNECT request was initiated.
-keepalive(State=#http_state{streams=[#stream{ref={connect, _, _}}]}, _, EvHandlerState) ->
-	{State, EvHandlerState};
+keepalive(State=#http_state{streams=[#stream{ref={connect, _, _}}]}) ->
+	State;
 %% We can only keep-alive by sending an empty line in-between streams.
-keepalive(State=#http_state{socket=Socket, transport=Transport, out=head}, _, EvHandlerState) ->
+keepalive(State=#http_state{socket=Socket, transport=Transport, out=head}) ->
 	Transport:send(Socket, <<"\r\n">>),
-	{State, EvHandlerState};
-keepalive(State, _, EvHandlerState) ->
-	{State, EvHandlerState}.
+	State;
+keepalive(State) ->
+	State.
 
 headers(State=#http_state{opts=Opts, out=head},
 		StreamRef, ReplyTo, Method, Host, Port, Path, Headers,
-		InitialFlow0, EvHandler, EvHandlerState0) ->
-	{Authority, Conn, Out, EvHandlerState} = send_request(State, StreamRef, ReplyTo,
+		InitialFlow0) ->
+	{Authority, Conn, Out} = send_request(State, StreamRef, ReplyTo,
 		Method, Host, Port, Path, Headers, undefined,
-		EvHandler, EvHandlerState0, ?FUNCTION_NAME),
+		?FUNCTION_NAME),
 	InitialFlow = initial_flow(InitialFlow0, Opts),
-	{new_stream(State#http_state{connection=Conn, out=Out}, StreamRef, ReplyTo,
-		Method, Authority, Path, InitialFlow), EvHandlerState}.
+	new_stream(State#http_state{connection=Conn, out=Out}, StreamRef, ReplyTo,
+		Method, Authority, Path, InitialFlow).
 
 request(State=#http_state{opts=Opts, out=head}, StreamRef, ReplyTo,
 		Method, Host, Port, Path, Headers, Body,
-		InitialFlow0, EvHandler, EvHandlerState0) ->
-	{Authority, Conn, Out, EvHandlerState} = send_request(State, StreamRef, ReplyTo,
+		InitialFlow0) ->
+	{Authority, Conn, Out} = send_request(State, StreamRef, ReplyTo,
 		Method, Host, Port, Path, Headers, Body,
-		EvHandler, EvHandlerState0, ?FUNCTION_NAME),
+		?FUNCTION_NAME),
 	InitialFlow = initial_flow(InitialFlow0, Opts),
-	{new_stream(State#http_state{connection=Conn, out=Out}, StreamRef, ReplyTo,
-		Method, Authority, Path, InitialFlow), EvHandlerState}.
+	new_stream(State#http_state{connection=Conn, out=Out}, StreamRef, ReplyTo,
+		Method, Authority, Path, InitialFlow).
 
 initial_flow(infinity, #{flow := InitialFlow}) -> InitialFlow;
 initial_flow(InitialFlow, _) -> InitialFlow.
 
 send_request(State=#http_state{socket=Socket, transport=Transport, version=Version},
-		StreamRef, ReplyTo, Method, Host, Port, Path, Headers0, Body,
-		EvHandler, EvHandlerState0, Function) ->
+		_StreamRef, _ReplyTo, Method, Host, Port, Path, Headers0, Body,
+		Function) ->
 	Headers1 = lists:keydelete(<<"transfer-encoding">>, 1, Headers0),
 	Headers2 = case Body of
 		undefined -> Headers1;
@@ -576,31 +500,10 @@ send_request(State=#http_state{socket=Socket, transport=Transport, version=Versi
 		{undefined, _} -> Headers4;
 		_ -> [{<<"content-length">>, integer_to_binary(iolist_size(Body))}|Headers4]
 	end,
-	RequestEvent = #{
-		stream_ref => StreamRef,
-		reply_to => ReplyTo,
-		function => Function,
-		method => Method,
-		authority => Authority,
-		path => Path,
-		headers => Headers
-	},
-	EvHandlerState1 = EvHandler:request_start(RequestEvent, EvHandlerState0),
 	Transport:send(Socket, [
 		cow_http:request(Method, Path, Version, Headers),
 		[Body || Body =/= undefined]]),
-	EvHandlerState2 = EvHandler:request_headers(RequestEvent, EvHandlerState1),
-	EvHandlerState = case Out of
-		head ->
-			RequestEndEvent = #{
-				stream_ref => StreamRef,
-				reply_to => ReplyTo
-			},
-			EvHandler:request_end(RequestEndEvent, EvHandlerState2);
-		_ ->
-			EvHandlerState2
-	end,
-	{Authority, Conn, Out, EvHandlerState}.
+	{Authority, Conn, Out}.
 
 host_header(Transport, Host0, Port) ->
 	Host = case Host0 of
@@ -623,15 +526,14 @@ transform_header_names(#http_state{opts=Opts}, Headers) ->
 	end.
 
 %% We are expecting a new stream.
-data(State=#http_state{out=head}, StreamRef, ReplyTo, _, _, _, EvHandlerState) ->
-	{error_stream_closed(State, StreamRef, ReplyTo), EvHandlerState};
+data(State=#http_state{out=head}, StreamRef, ReplyTo, _, _) ->
+	error_stream_closed(State, StreamRef, ReplyTo);
 %% There are no active streams.
-data(State=#http_state{streams=[]}, StreamRef, ReplyTo, _, _, _, EvHandlerState) ->
-	{error_stream_not_found(State, StreamRef, ReplyTo), EvHandlerState};
+data(State=#http_state{streams=[]}, StreamRef, ReplyTo, _, _) ->
+	error_stream_not_found(State, StreamRef, ReplyTo);
 %% We can only send data on the last created stream.
 data(State=#http_state{socket=Socket, transport=Transport, version=Version,
-		out=Out, streams=Streams}, StreamRef, ReplyTo, IsFin, Data,
-		EvHandler, EvHandlerState0) ->
+		out=Out, streams=Streams}, StreamRef, ReplyTo, IsFin, Data) ->
 	case lists:last(Streams) of
 		#stream{ref=StreamRef, is_alive=true} ->
 			DataLength = iolist_size(Data),
@@ -646,35 +548,25 @@ data(State=#http_state{socket=Socket, transport=Transport, version=Version,
 								cow_http_te:last_chunk()
 							])
 					end,
-					RequestEndEvent = #{
-						stream_ref => StreamRef,
-						reply_to => ReplyTo
-					},
-					EvHandlerState = EvHandler:request_end(RequestEndEvent, EvHandlerState0),
-					{State#http_state{out=head}, EvHandlerState};
+					State#http_state{out=head};
 				body_chunked when Version =:= 'HTTP/1.1' ->
 					Transport:send(Socket, cow_http_te:chunk(Data)),
-					{State, EvHandlerState0};
+					State;
 				{body, Length} when DataLength =< Length ->
 					Transport:send(Socket, Data),
 					Length2 = Length - DataLength,
 					if
 						Length2 =:= 0, IsFin =:= fin ->
-							RequestEndEvent = #{
-								stream_ref => StreamRef,
-								reply_to => ReplyTo
-							},
-							EvHandlerState = EvHandler:request_end(RequestEndEvent, EvHandlerState0),
-							{State#http_state{out=head}, EvHandlerState};
+							State#http_state{out=head};
 						Length2 > 0, IsFin =:= nofin ->
-							{State#http_state{out={body, Length2}}, EvHandlerState0}
+							State#http_state{out={body, Length2}}
 					end;
 				body_chunked -> %% HTTP/1.0
 					Transport:send(Socket, Data),
-					{State, EvHandlerState0}
+					State
 			end;
 		_ ->
-			{error_stream_not_found(State, StreamRef, ReplyTo), EvHandlerState0}
+			error_stream_not_found(State, StreamRef, ReplyTo)
 	end.
 
 connect(State=#http_state{streams=Streams}, StreamRef, ReplyTo, _, _, _) when Streams =/= [] ->
@@ -714,19 +606,13 @@ connect(State=#http_state{socket=Socket, transport=Transport, opts=Opts, version
 		<<"CONNECT">>, Authority, <<>>, InitialFlow).
 
 %% We can't cancel anything, we can just stop forwarding messages to the owner.
-cancel(State0, StreamRef, ReplyTo, EvHandler, EvHandlerState0) ->
+cancel(State0, StreamRef, ReplyTo) ->
 	case is_stream(State0, StreamRef) of
 		true ->
 			State = cancel_stream(State0, StreamRef),
-			EvHandlerState = EvHandler:cancel(#{
-				stream_ref => StreamRef,
-				reply_to => ReplyTo,
-				endpoint => local,
-				reason => cancel
-			}, EvHandlerState0),
-			{State, EvHandlerState};
+			State;
 		false ->
-			{error_stream_not_found(State0, StreamRef, ReplyTo), EvHandlerState0}
+			error_stream_not_found(State0, StreamRef, ReplyTo)
 	end.
 
 stream_info(#http_state{streams=Streams}, StreamRef) ->
@@ -835,12 +721,12 @@ end_stream(State=#http_state{streams=[_|Tail]}) ->
 %% Websocket upgrade.
 
 ws_upgrade(#http_state{version='HTTP/1.0'},
-		StreamRef, ReplyTo, _, _, _, _, _, _, EvHandlerState) ->
+		StreamRef, ReplyTo, _, _, _, _, _) ->
 	ReplyTo ! {gun_error, self(), StreamRef, {badstate,
 		"Websocket cannot be used over an HTTP/1.0 connection."}},
-	{[], EvHandlerState};
+	[];
 ws_upgrade(State=#http_state{out=head}, StreamRef, ReplyTo,
-		Host, Port, Path, Headers0, WsOpts, EvHandler, EvHandlerState0) ->
+		Host, Port, Path, Headers0, WsOpts) ->
 	{Headers1, GunExtensions} = case maps:get(compress, WsOpts, false) of
 		true -> {[{<<"sec-websocket-extensions">>,
 				<<"permessage-deflate; client_max_window_bits; server_max_window_bits=15">>}
@@ -862,13 +748,13 @@ ws_upgrade(State=#http_state{out=head}, StreamRef, ReplyTo,
 		{<<"sec-websocket-key">>, Key}
 		|Headers2
 	],
-	{Authority, Conn, Out, EvHandlerState} = send_request(State, StreamRef, ReplyTo,
+	{Authority, Conn, Out} = send_request(State, StreamRef, ReplyTo,
 		<<"GET">>, Host, Port, Path, Headers, undefined,
-		EvHandler, EvHandlerState0, ?FUNCTION_NAME),
+		?FUNCTION_NAME),
 	InitialFlow = maps:get(flow, WsOpts, infinity),
-	{new_stream(State#http_state{connection=Conn, out=Out},
+	new_stream(State#http_state{connection=Conn, out=Out},
 		#websocket{ref=StreamRef, reply_to=ReplyTo, key=Key, extensions=GunExtensions, opts=WsOpts},
-		ReplyTo, <<"GET">>, Authority, Path, InitialFlow), EvHandlerState}.
+		ReplyTo, <<"GET">>, Authority, Path, InitialFlow).
 
 ws_handshake(Buffer, State, Ws=#websocket{key=Key}, Headers) ->
 	%% @todo check upgrade, connection
