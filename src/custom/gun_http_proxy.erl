@@ -2,30 +2,16 @@
 
 -export([
   name/0,
-  connect/3,
   connect/4
 ]).
 
--type http_socket() :: {atom(), inet:socket()}.
--export_type([http_socket/0]).
-
 name() -> http_proxy.
 
-ssl_opts(Host, Opts) ->
-  [{server_name_indication, Host} | gun_util:ssl_opts(Host,Opts)].
-
-
-connect(ProxyHost, ProxyPort, Opts) ->
-  connect(ProxyHost, ProxyPort, Opts, 35000).
-
 connect(ProxyHost, ProxyPort, Opts, Timeout)
-  when is_list(ProxyHost), is_integer(ProxyPort),
-       (Timeout =:= infinity orelse is_integer(Timeout)) ->
+  when is_list(ProxyHost), is_integer(ProxyPort), (Timeout =:= infinity orelse is_integer(Timeout)) ->
   %% get the  host and port to connect from the options
   Host = proplists:get_value(connect_host, Opts),
   Port = proplists:get_value(connect_port, Opts),
-  Transport = proplists:get_value(connect_transport, Opts),
-
   %% filter connection options
   AcceptedOpts =  [linger, nodelay, send_timeout, send_timeout_close, raw, inet6, ip],
   BaseOpts = [binary, {active, false}, {packet, 0}, {keepalive,  true}, {nodelay, true}],
@@ -37,22 +23,7 @@ connect(ProxyHost, ProxyPort, Opts, Timeout)
     {ok, Socket} ->
       case do_handshake(Socket, Host, Port, Opts, Timeout) of
         ok ->
-          %% if we are connecting to a remote https source, we
-          %% upgrade the connection socket to handle SSL.
-          case Transport of
-            gun_tls ->
-              SSLOpts = ssl_opts(Host, Opts),
-              %% upgrade the tcp connection
-              case ssl:connect(Socket, SSLOpts) of
-                {ok, SslSocket} ->
-                  {ok, {Transport, SslSocket}};
-                Error ->
-                  gen_tcp:close(Socket),
-                  Error
-              end;
-            _ ->
-              {ok, {Transport, Socket}}
-          end;
+          {ok, Socket};
         Error ->
           gen_tcp:close(Socket),
           Error
