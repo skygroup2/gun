@@ -891,15 +891,32 @@ connecting(_, {retries, Retries, _Reason}, State=#state{opts=Opts,
 	ConnectOpts = format_proxy_opts(ProxyConnect, ProxyOpts, [binary, {active, false}, {packet, 0}, {keepalive,  true}, {nodelay, true}]),
 	case ProxyConnect:connect(Host, Port, ConnectOpts, ConnectTimeout) of
 		{ok, Socket} when Transport =:= gun_tcp ->
-			[Protocol] = maps:get(protocols, Opts, [http]),
-			{next_state, connected, State#state{socket = Socket},
-				{next_event, internal, {connected, Socket, Protocol}}};
+			case gun_stats:connection_active(self()) of
+				true ->
+					[Protocol] = maps:get(protocols, Opts, [http]),
+					{next_state, connected, State#state{socket = Socket},
+						{next_event, internal, {connected, Socket, Protocol}}};
+				false ->
+					gun_tcp:close(Socket),
+					{stop, normal, State}
+			end;
 		{ok, Socket} when Transport =:= gun_tls ->
-			{next_state, initial_tls_handshake, State#state{socket = Socket},
-				{next_event, internal, {retries, Retries, Socket}}};
+			case gun_stats:connection_active(self()) of
+				true ->
+					{next_state, initial_tls_handshake, State#state{socket = Socket},
+						{next_event, internal, {retries, Retries, Socket}}};
+				false ->
+					gun_tcp:close(Socket),
+					{stop, normal, State}
+			end;
 		{error, Reason} ->
-			{next_state, not_connected, State,
-				{next_event, internal, {retries, Retries, Reason}}}
+			case gun_stats:connection_active(self()) of
+				true ->
+					{next_state, not_connected, State,
+						{next_event, internal, {retries, Retries, Reason}}};
+				false ->
+					{stop, normal, State}
+			end
 	end.
 
 initial_tls_handshake(_, {retries, Retries, Socket}, State0=#state{opts=Opts}) ->
@@ -1184,7 +1201,7 @@ handle_common(info, {'DOWN', OwnerRef, process, Owner, Reason}, StateName, State
 				undefined ->
 					%% @todo This is missing the disconnect event.
 					Transport:close(Socket),
-					owner_down(Reason, State);
+					owner_down(Reason, State#state{socket = undefined});
 				%% We are already closing so no need to initiate closing again.
 				_ when StateName =:= closing ->
 					{keep_state, status(State, {down, Reason})};
