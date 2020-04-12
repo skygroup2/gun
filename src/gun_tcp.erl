@@ -40,9 +40,7 @@ messages() -> {tcp, tcp_closed, tcp_error}.
 connect(Host, Port, Opts, Timeout) when is_binary(Host) ->
 	connect(binary_to_list(Host), Port, Opts, Timeout);
 connect(Host, Port, Opts, Timeout) when is_integer(Port) ->
-	gen_tcp:connect(Host, Port,
-		Opts ++ [binary, {active, false}, {packet, raw}],
-		Timeout).
+	gen_tcp:connect(Host, Port, Opts, Timeout).
 
 -spec send(inet:socket(), iodata()) -> ok | {error, atom()}.
 send(Socket, Packet) ->
