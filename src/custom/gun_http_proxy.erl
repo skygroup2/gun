@@ -44,7 +44,7 @@ do_handshake(Socket, Host, Port, Options, Timeout) ->
     _ ->
       iolist_to_binary([Host, ":", integer_to_list(ProxyPort)])
   end,
-  UA =  <<"gun/1.3.2">>,
+  UA =  <<"Gun/2.x">>,
   Headers0 = [<<"Host: ", HostHdr/binary>>, <<"User-Agent: ", UA/binary >>],
   Headers = case ProxyUser of
     undefined ->
