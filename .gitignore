@@ -37,3 +37,5 @@ test/*.beam
 rebar.lock
 rebar3
 
+test/test_data.json
+

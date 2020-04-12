@@ -26,10 +26,12 @@ defmodule GunTest do
     ret2 = Gun.http_request("GET", url, headers, "", opts, nil)
     assert(ret1.body == ret2.body)
   end
-
+#
   test "http_proxy" do
     # run
-    proxy = %{proxy: "xxx", proxy_auth: {"a", "b"}}
+    %{"proxy" => h, "proxy_user" => u, "proxy_password" => p} = Jason.decode! File.read!("./test/test_data.json")
+    proxy = %{proxy: h, proxy_auth: {u, p}}
+    IO.inspect proxy
     url = "http://lumtest.com/myip"
     headers = %{"connection" => "close"}
     opts = Gun.default_option(25000) |> Map.merge(proxy)
