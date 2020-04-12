@@ -31,7 +31,7 @@ defmodule GunTest do
     # run
     %{"proxy" => h, "proxy_user" => u, "proxy_password" => p} = Jason.decode! File.read!("./test/test_data.json")
     proxy = %{proxy: h, proxy_auth: {u, p}}
-    IO.inspect proxy
+#    IO.inspect proxy
     url = "http://lumtest.com/myip"
     headers = %{"connection" => "close"}
     opts = Gun.default_option(25000) |> Map.merge(proxy)
