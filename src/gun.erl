@@ -857,7 +857,7 @@ init({Owner, Host, Port, Opts}) ->
       PO = [{socks5_host, ProxyHost}, {socks5_port, ProxyPort}, {socks5_user, ProxyUser}, {socks5_pass, ProxyPass}, {socks5_resolve, ProxyResolve}],
       {gun_socks5_proxy, PO, Host, Port};
 	 	_ ->
-      {Transport, [], Host, Port}
+      {gun_tcp, [], Host, Port}
  	end,
 	gun_stats:update_counter(active_connection, 1),
 	gun_stats:update_counter(total_connection, 1),
@@ -1376,9 +1376,9 @@ get_proxy_auth(Opts) ->
 select_http_proxy(gun_tcp, _ProxyOpts, ProxyHost, ProxyPort) -> {gun_tcp, [], ProxyHost, ProxyPort};
 select_http_proxy(_, ProxyOpts, ProxyHost, ProxyPort) -> {gun_http_proxy, ProxyOpts, ProxyHost, ProxyPort}.
 
-format_path_headers(gun_tcp, ProxyConnect, OriginHost, OriginPort, Path, Headers, Opts) ->
+format_path_headers(Transport, ProxyConnect, OriginHost, OriginPort, Path, Headers, Opts) ->
 	case maps:get(proxy_auth, Opts, undefined) of
-		{U, P} when ProxyConnect == gun_http_proxy ->
+		{U, P} when Transport == gun_tcp andalso ProxyConnect == gun_http_proxy ->
 			{add_host_to_path(OriginHost, OriginPort, Path), add_proxy_authorization(U, P, Headers)};
 		_ ->
 			{Path, Headers}

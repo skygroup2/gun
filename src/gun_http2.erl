@@ -287,11 +287,9 @@ headers_frame(State0=#http2_state{content_handlers=Handlers0, commands_queue=Com
 	Stream = get_stream_by_id(State0, StreamID),
 	#stream{
 		ref=StreamRef,
-		reply_to=ReplyTo,
-		authority=Authority,
-		path=Path
+		reply_to=ReplyTo
 	} = Stream,
-	State = State0#http2_state{commands_queue=[{set_cookie, Authority, Path, Status, Headers}|Commands]},
+	State = State0#http2_state{commands_queue=[Commands]},
 	if
 		Status >= 100, Status =< 199 ->
 			ReplyTo ! {gun_inform, self(), StreamRef, Status, Headers},
