@@ -74,7 +74,7 @@ decode(c, <<1, Status>>) ->
 decode(c, <<5, Method>>) ->
   #{type => auth_resp, method => Method};
 decode(_, _) ->
-  {error, badarg}.
+  {error, socks_msg}.
 
 
 encode_addr({IP1, IP2, IP3, IP4}, Port) ->
@@ -99,6 +99,6 @@ decode_addr(4, SmallBin) when byte_size(SmallBin) < 18 ->
   {more, 18 - byte_size(SmallBin)};
 decode_addr(3, <<HL, SmallBin/binary>>) when byte_size(SmallBin) < HL + 2 ->
   {more, HL + 2 - byte_size(SmallBin)};
-decode_addr(_AType, _) -> {error, badarg}.
+decode_addr(_AType, _) -> {error, socks_addr}.
 
 

@@ -26,7 +26,7 @@ defmodule GunTest do
     ret2 = Gun.http_request("GET", url, headers, "", opts, nil)
     assert(ret1.body == ret2.body)
   end
-#
+
   test "http_proxy" do
     # run
     %{"proxy" => h, "proxy_user" => u, "proxy_password" => p} = Jason.decode! File.read!("./test/test_data.json")
@@ -40,6 +40,15 @@ defmodule GunTest do
     url = "https://lumtest.com/myip"
     ret2 = Gun.http_request("GET", url, headers, "", opts, nil)
     assert(ret1.body == ret2.body)
+  end
+
+  test "error_code" do
+    proxy = %{proxy: {:socks5, {127, 0, 0, 1}, 1081}}
+    url = "http://lumtest.com/myip"
+    headers = %{"connection" => "close"}
+    opts = Gun.default_option(25000) |> Map.merge(proxy)
+    ret1 = Gun.http_request("GET", url, headers, "", opts, nil)
+    assert ret1 == {:error, :econnrefused}
   end
 
 end

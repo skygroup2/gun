@@ -713,7 +713,7 @@ await_up(ServerPid, Timeout, MRef) ->
 		{gun_socks_up, ServerPid, Protocol} ->
 			{ok, Protocol};
 		{'DOWN', MRef, process, ServerPid, Reason} ->
-			{error, {down, Reason}}
+			format_error_return(Reason)
 	after Timeout ->
 		{error, timeout}
 	end.
@@ -913,7 +913,7 @@ connecting(_, {retries, Retries, _Reason}, State=#state{opts=Opts,
 			case gun_stats:connection_active(self()) of
 				true ->
 					{next_state, not_connected, State,
-						{next_event, internal, {retries, Retries, Reason}}};
+						{next_event, internal, {retries, Retries, {error, Reason}}}};
 				false ->
 					{stop, normal, State}
 			end
@@ -1421,3 +1421,12 @@ format_proxy_opts(ProxyConnect, ProxyOpts, TransOpts) ->
     gun_tcp ->
       TransOpts
   end.
+
+format_error_return(normal) ->
+	{error, closed};
+format_error_return(close) ->
+	{error, closed};
+format_error_return({shutdown, {error, Reason}}) ->
+	{error, Reason};
+format_error_return(Reason) ->
+	{error, Reason}.
