@@ -6,7 +6,7 @@ defmodule GunTest do
     # http
     url = "http://lumtest.com/myip"
     headers = %{"connection" => "close"}
-    opts = Gun.default_option(25000, 25000)
+    opts = Gun.default_option(25000)
     ret1 = Gun.http_request("GET", url, headers, "", opts, nil)
     # https
     url = "https://lumtest.com/myip"
@@ -19,7 +19,7 @@ defmodule GunTest do
     proxy = %{proxy: {:socks5, {127, 0, 0, 1}, 1080}}
     url = "http://lumtest.com/myip"
     headers = %{"connection" => "close"}
-    opts = Gun.default_option(25000, 25000) |> Map.merge(proxy)
+    opts = Gun.default_option(25000) |> Map.merge(proxy)
     ret1 = Gun.http_request("GET", url, headers, "", opts, nil)
     # https
     url = "https://lumtest.com/myip"
@@ -32,7 +32,7 @@ defmodule GunTest do
     proxy = %{proxy: "xxx", proxy_auth: {"a", "b"}}
     url = "http://lumtest.com/myip"
     headers = %{"connection" => "close"}
-    opts = Gun.default_option(25000, 25000) |> Map.merge(proxy)
+    opts = Gun.default_option(25000) |> Map.merge(proxy)
     ret1 = Gun.http_request("GET", url, headers, "", opts, nil)
     # https
     url = "https://lumtest.com/myip"
