@@ -844,11 +844,7 @@ init({Owner, Host, Port, Opts}) ->
       {ProxyUser, ProxyPass} = get_proxy_auth(Opts),
       PO = [{connect_host, Host}, {connect_port, Port}, {connect_user, ProxyUser}, {connect_pass, ProxyPass}],
       return_http_proxy(Transport, PO, ProxyHost, ProxyPort);
-    {ProxyHost, ProxyPort} ->
-      {ProxyUser, ProxyPass} = get_proxy_auth(Opts),
-      PO = [{connect_host, Host}, {connect_port, Port}, {connect_user, ProxyUser}, {connect_pass, ProxyPass}],
-      return_http_proxy(Transport, PO, ProxyHost, ProxyPort);
-    {connect, ProxyHost, ProxyPort} ->
+    {http, ProxyHost, ProxyPort} ->
       {ProxyUser, ProxyPass} = get_proxy_auth(Opts),
       PO = [{connect_host, Host}, {connect_port, Port}, {connect_user, ProxyUser}, {connect_pass, ProxyPass}],
       return_http_proxy(Transport, PO, ProxyHost, ProxyPort);
