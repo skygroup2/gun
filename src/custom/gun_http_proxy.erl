@@ -85,8 +85,10 @@ recv_msg(Socket, Timeout, Buf) ->
     {ok, Data} ->
       NewData = <<Buf/binary, Data/binary>>,
       case binary:match(NewData, <<"\r\n\r\n">>) of
-        nomatch ->
+        nomatch when byte_size(NewData) < 1024 ->
           recv_msg(Socket, Timeout, NewData);
+        nomatch ->
+          {error, big_http_resp};
         _ ->
           {ok, NewData}
       end;
