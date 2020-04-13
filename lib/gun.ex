@@ -70,7 +70,7 @@ defmodule Gun do
       {:error, _} ->
         Process.demonitor(mref, [:flush])
         http_close(ref, conn)
-        resp
+        http_format_error(resp)
       _ ->
         Process.demonitor(mref, [:flush])
         if ref == nil do
@@ -86,8 +86,10 @@ defmodule Gun do
     case reason do
       :normal -> {:error, :closed}
       :close -> {:error, :closed}
-      {:error, _} -> reason
-      _ -> {:error, reason}
+      {:error, _} ->
+        reason
+      _ ->
+        {:error, reason}
     end
   end
 
@@ -104,7 +106,7 @@ defmodule Gun do
         data1 = resp.body <> data
         http_recv(conn, stream, ref, mref, timeout, %{resp| body: data1})
       {:DOWN, ^mref, :process, ^conn, reason} ->
-        {:error, reason}
+        http_format_error(reason)
       {:gun_down, ^conn, _proto, reason, retry, _killed_stream, _unprocessed_stream} ->
         if retry > 0 do
           {:error, :retry}
@@ -112,9 +114,9 @@ defmodule Gun do
           http_format_error(reason)
         end
       {:gun_error, ^conn, ^stream, reason} ->
-        {:error, reason}
+        http_format_error(reason)
       {:gun_error, ^conn, reason} ->
-        {:error, reason}
+        http_format_error(reason)
     after
       timeout ->
         {:error, :timeout}
