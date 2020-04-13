@@ -276,7 +276,7 @@ handle_connect(Rest, State=#http_state{
 				stream_ref => StreamRef,
 				reply_to => ReplyTo,
 				tls_opts => maps:get(tls_opts, Destination, []),
-				timeout => maps:get(tls_handshake_timeout, Destination, infinity)
+				timeout => maps:get(tls_handshake_timeout, Destination, 35000)
 			},
 			Protocols = maps:get(protocols, Destination, [http2, http]),
 			handle_ret([

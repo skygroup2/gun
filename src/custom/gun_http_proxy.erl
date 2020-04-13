@@ -44,8 +44,7 @@ do_handshake(Socket, Host, Port, Options, Timeout) ->
     _ ->
       iolist_to_binary([Host, ":", integer_to_list(ProxyPort)])
   end,
-  UA =  <<"Gun/2.x">>,
-  Headers0 = [<<"Host: ", HostHdr/binary>>, <<"User-Agent: ", UA/binary >>],
+  Headers0 = [<<"Host: ", HostHdr/binary>>],
   Headers = case ProxyUser of
     undefined ->
       Headers0;
@@ -67,7 +66,7 @@ do_handshake(Socket, Host, Port, Options, Timeout) ->
   end.
 
 check_response(Socket, Timeout) ->
-  case gen_tcp:recv(Socket, 0, Timeout) of
+  case recv_msg(Socket, Timeout, <<>>) of
     {ok, Data} ->
       {_Version, Status, _Msg, Rest} = cow_http:parse_status_line(Data),
       if
@@ -76,6 +75,20 @@ check_response(Socket, Timeout) ->
           update_proxy_ip([<<"x-hola-ip">>], Headers);
         true ->
           {error, {proxy_error, Status}}
+      end;
+    Error ->
+      Error
+  end.
+
+recv_msg(Socket, Timeout, Buf) ->
+  case gen_tcp:recv(Socket, 0, Timeout) of
+    {ok, Data} ->
+      NewData = <<Buf/binary, Data/binary>>,
+      case binary:match(NewData, <<"\r\n\r\n">>) of
+        nomatch ->
+          recv_msg(Socket, Timeout, NewData);
+        _ ->
+          {ok, NewData}
       end;
     Error ->
       Error
