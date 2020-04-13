@@ -14,7 +14,7 @@ defmodule Gun do
       connect_timeout: connect_timeout,
       tcp_opts: [{:reuseaddr, true}, {:reuse_sessions, false}, {:linger, {false, 0}}],
       tls_opts: [{:versions, [:"tlsv1.2"]}],
-      http2_opts: [{:settings_timeout, 15000}, {:preface_timeout, 30000}]
+      http2_opts: %{settings_timeout: 15000, preface_timeout: 30000}
     }
   end
 
