@@ -58,7 +58,7 @@ defmodule Gun do
       {:error, reason} ->
         Process.demonitor(mref, [:flush])
         http_close(ref, conn)
-        {:error, reason}
+        http_format_error(reason)
     end
   end
 
