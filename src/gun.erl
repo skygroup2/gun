@@ -281,6 +281,8 @@ check_options([{proxy, Proxy}|Opts]) when is_list(Proxy) orelse is_binary(Proxy)
 	check_options(Opts);
 check_options([{proxy_auth, ProxyAuth}|Opts]) when is_tuple(ProxyAuth) orelse ProxyAuth == nil ->
 	check_options(Opts);
+check_options([{socks5_resolve, Resolve}| Opts]) when is_atom(Resolve) ->
+	check_options(Opts);
 check_options([{connect_timeout, infinity}|Opts]) ->
 	check_options(Opts);
 check_options([{connect_timeout, T}|Opts]) when is_integer(T), T >= 0 ->
