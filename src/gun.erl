@@ -1428,6 +1428,8 @@ format_error_return(normal) ->
 	{error, closed};
 format_error_return(close) ->
 	{error, closed};
+format_error_return({shutdown, closed}) ->
+	{error, closed};
 format_error_return({shutdown, {error, Reason}}) ->
 	{error, Reason};
 format_error_return(Reason) ->
