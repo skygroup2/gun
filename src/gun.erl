@@ -951,6 +951,7 @@ ensure_alpn_sni(Protocols0, TransOpts0, #state{origin_host=OriginHost}) ->
 	%% Normally only DNS hostnames are supported for SNI. However, the ssl
 	%% application itself allows any string through so we do the same.
 	if
+		is_binary(OriginHost) -> [{server_name_indication, binary_to_list(OriginHost)}|TransOpts];
 		is_list(OriginHost) -> [{server_name_indication, OriginHost}|TransOpts];
 		is_atom(OriginHost) -> [{server_name_indication, atom_to_list(OriginHost)}|TransOpts];
 		true -> TransOpts
