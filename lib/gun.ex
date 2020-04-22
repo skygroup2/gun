@@ -9,13 +9,18 @@ defmodule Gun do
     :gun_app.stop(state)
   end
 
-  def default_option(connect_timeout) do
+  def default_option(connect_timeout, recv_timeout\\ 30000) do
     %{
       connect_timeout: connect_timeout,
+      recv_timeout: recv_timeout,
       tcp_opts: [{:reuseaddr, true}, {:reuse_sessions, false}, {:linger, {false, 0}}],
       tls_opts: [{:versions, [:"tlsv1.2"]}],
       http2_opts: %{settings_timeout: 15000, preface_timeout: 30000}
     }
+  end
+
+  defp format_gun_opts(opts) do
+    Map.drop(opts, [:recv_timeout])
   end
 
   def http_request(method, url, headers, body, opts, ref) do
@@ -23,7 +28,7 @@ defmodule Gun do
     conn = Process.get(ref)
     if is_pid(conn) and Process.alive?(conn) do
       mref = Process.monitor(conn)
-      stream = :gun.request(conn, method, u.raw_path, headers, body, opts)
+      stream = :gun.request(conn, method, u.raw_path, headers, body, format_gun_opts(opts))
       case http_recv(conn, stream, ref, mref, Map.get(opts, :connect_timeout, 20000)) do
         {:error, :retry} ->
           http_await_make_request(conn, ref, mref, method, u.raw_path, headers, body, opts)
@@ -33,7 +38,7 @@ defmodule Gun do
     else
       opts =
         if u.scheme == :https, do: Map.merge(opts, %{transport: :tls}), else: opts
-      case :gun.open(u.host, u.port, opts) do
+      case :gun.open(u.host, u.port, format_gun_opts(opts)) do
         {:ok, conn} ->
           mref = Process.monitor(conn)
           Process.put(conn, u.raw_path)
