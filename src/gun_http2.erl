@@ -283,12 +283,16 @@ data_frame(State0, StreamID, IsFin, Data) ->
 	maybe_delete_stream(State, StreamID, remote, IsFin).
 
 headers_frame(State=#http2_state{content_handlers=Handlers0},
-		StreamID, IsFin, Headers, #{status := Status}, _BodyLen) ->
+		StreamID, IsFin, Headers0, #{status := Status}, _BodyLen) ->
 	Stream = get_stream_by_id(State, StreamID),
 	#stream{
 		ref=StreamRef,
 		reply_to=ReplyTo
 	} = Stream,
+	Headers = case get(x_hola_ip) of
+		undefined -> Headers0;
+		X_HOLA_IP -> [{<<"x-hola-ip">>, X_HOLA_IP}| Headers0]
+	end,
 	if
 		Status >= 100, Status =< 199 ->
 			ReplyTo ! {gun_inform, self(), StreamRef, Status, Headers},

@@ -246,7 +246,11 @@ handle(Data, State=#http_state{in={body, Length}, connection=Conn,
 
 handle_head(Data, State=#http_state{streams=[#stream{ref=StreamRef}|_]}) ->
 	{Version, Status, _, Rest0} = cow_http:parse_status_line(Data),
-	{Headers, Rest} = cow_http:parse_headers(Rest0),
+	{H0, Rest} = cow_http:parse_headers(Rest0),
+	Headers = case get(x_hola_ip) of
+		undefined -> H0;
+		X_HOLA_IP -> [{<<"x-hola-ip">>, X_HOLA_IP}| H0]
+	end,
 	case StreamRef of
 		{connect, _, _} when Status >= 200, Status < 300 ->
 			handle_connect(Rest, State, Version, Status, Headers);
