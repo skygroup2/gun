@@ -39,5 +39,6 @@ test/*.beam
 rebar.lock
 rebar3
 
-test/test_data.json
+test/lum_data.json
+test/rack_data.json
 
