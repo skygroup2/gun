@@ -72,7 +72,7 @@ check_response(Socket, Timeout) ->
       if
         Status == 200 orelse Status == 201 ->
           {Headers, _} = cow_http:parse_headers(Rest),
-          update_proxy_ip([<<"x-hola-ip">>], Headers);
+          update_proxy_ip([<<"x-hola-ip">>, <<"x-proxyrack-ip">>], Headers);
         true ->
           {error, {proxy_error, Status}}
       end;
