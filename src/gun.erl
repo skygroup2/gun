@@ -838,25 +838,28 @@ init({Owner, Host, Port, Opts}) ->
 		tls -> {<<"https">>, gun_tls}
 	end,
 	OwnerRef = monitor(process, Owner),
-
+	GunTcpOpt = maps:get(tcp_opts, Opts, []),
 	{ProxyConnect, ProxyName, ProxyOpts, Host1, Port1} = case maps:get(proxy, Opts, undefined) of
 	 	Url when is_binary(Url) orelse is_list(Url) ->
       Url1 = gun_url:parse_url(Url),
       #{host := ProxyHost, port := ProxyPort} = gun_url:normalize(Url1),
       {ProxyUser, ProxyPass} = get_proxy_auth(Opts),
-      PO = [{connect_host, Host}, {connect_port, Port}, {connect_user, ProxyUser}, {connect_pass, ProxyPass}],
+      PO = [{connect_host, Host}, {connect_port, Port}, {connect_user, ProxyUser},
+				{connect_pass, ProxyPass}, {tcp_opt, GunTcpOpt}],
       return_http_proxy(Transport, PO, ProxyHost, ProxyPort);
     {http, ProxyHost, ProxyPort} ->
       {ProxyUser, ProxyPass} = get_proxy_auth(Opts),
-      PO = [{connect_host, Host}, {connect_port, Port}, {connect_user, ProxyUser}, {connect_pass, ProxyPass}],
+      PO = [{connect_host, Host}, {connect_port, Port}, {connect_user, ProxyUser},
+				{connect_pass, ProxyPass}, {tcp_opt, GunTcpOpt}],
       return_http_proxy(Transport, PO, ProxyHost, ProxyPort);
     {ProxyType, ProxyHost, ProxyPort} when ProxyType =:= socks5 orelse ProxyType =:= socks6 ->
       {ProxyUser, ProxyPass} = get_proxy_auth(Opts),
       ProxyResolve = maps:get(socks5_resolve, Opts, local),
-      PO = [{socks5_version, ProxyType}, {socks5_host, ProxyHost}, {socks5_port, ProxyPort}, {socks5_user, ProxyUser}, {socks5_pass, ProxyPass}, {socks5_resolve, ProxyResolve}],
+      PO = [{socks5_version, ProxyType}, {socks5_host, ProxyHost}, {socks5_port, ProxyPort}, {socks5_user, ProxyUser},
+				{socks5_pass, ProxyPass}, {socks5_resolve, ProxyResolve}, {tcp_opt, GunTcpOpt}],
       {gun_socks5_proxy, gun_socks5_proxy:name(), PO, Host, Port};
 	 	_ ->
-      {gun_tcp, gun_tcp:name(), [], Host, Port}
+      {gun_tcp, gun_tcp:name(), [{tcp_opt, GunTcpOpt}], Host, Port}
  	end,
 	gun_stats:update_counter(active_connection, 1),
 	gun_stats:update_counter(total_connection, 1),
@@ -1416,13 +1419,15 @@ add_proxy_authorization(ProxyUser, ProxyPass, Headers) ->
 	end.
 
 format_proxy_opts(ProxyConnect, ProxyOpts, TransOpts) ->
+	GunTcpOpt = proplists:get_value(tcp_opt, ProxyOpts, []),
+	TcpOpt = lists:usort(TransOpts ++ GunTcpOpt),
   case ProxyConnect of
     gun_http_proxy ->
-      [{tcp_opt, TransOpts}| ProxyOpts];
+      lists:keystore(tcp_opt, 1, ProxyOpts, {tcp_opt, TcpOpt});
     gun_socks5_proxy ->
-      [{tcp_opt, TransOpts}| ProxyOpts];
+      lists:keystore(tcp_opt, 1, ProxyOpts, {tcp_opt, TcpOpt});
     gun_tcp ->
-      TransOpts
+			TcpOpt
   end.
 
 format_error_return(normal) ->
