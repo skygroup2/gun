@@ -894,6 +894,7 @@ connecting(_, {retries, Retries, _Reason}, State=#state{opts=Opts,
 		transport=Transport, host = Host, port = Port, proxy_connect = ProxyConnect, proxy_opts = ProxyOpts}) ->
 	ConnectTimeout = maps:get(connect_timeout, Opts, 35000),
 	ConnectOpts = format_proxy_opts(ProxyConnect, ProxyOpts, [binary, {active, false}, {packet, 0}, {keepalive,  true}, {nodelay, true}]),
+	%% io:format("OPT = ~p~n", [ConnectOpts]),
 	case ProxyConnect:connect(Host, Port, ConnectOpts, ConnectTimeout) of
 		{ok, Socket} when Transport =:= gun_tcp ->
 			case gun_stats:connection_active(self()) of

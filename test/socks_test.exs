@@ -44,6 +44,6 @@ defmodule SocksTest do
   end
 
   test "socks6_msg" do
-
+    :ok
   end
 end

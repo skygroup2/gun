@@ -44,6 +44,7 @@ defmodule GunTest do
     assert(hola_ip == ret2.body)
   end
 
+  @tag :exclude
   test "rack_proxy" do
     %{"proxy" => h} = Jason.decode! File.read!("./test/rack_data.json")
     proxy = %{proxy: h}
