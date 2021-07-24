@@ -17,7 +17,7 @@ defmodule Gun do
       tls_opts: [{:versions, [:"tlsv1.2"]}],
       http2_opts: %{settings_timeout: 15000, preface_timeout: 30000},
       ws_opts: %{
-        compress: false,
+        compress: true,
         reply_to: self(),
       },
     }
@@ -72,7 +72,8 @@ defmodule Gun do
   end
 
   def http_recv(conn, stream, ref, mref, timeout) do
-    resp = http_recv(conn, stream, ref, mref, timeout, %{status_code: 200, headers: [], body: "", reason: nil})
+    resp = http_recv(conn, stream, ref, mref, timeout, %{status_code: 200,
+      headers: [], body: "", protocols: [], mref: nil, cookies: [], reason: nil})
     case resp do
       {:error, :retry} ->
         resp
@@ -113,6 +114,8 @@ defmodule Gun do
       {:gun_data, ^conn, ^stream, :nofin, data} ->
         data1 = resp.body <> data
         http_recv(conn, stream, ref, mref, timeout, %{resp| body: data1})
+      {:gun_upgrade, ^conn, ^stream, protocols, headers} ->
+        %{resp| status_code: 101, headers: headers, protocols: protocols}
       {:DOWN, ^mref, :process, ^conn, reason} ->
         http_format_error(reason)
       {:gun_down, ^conn, _proto, reason, retry, _killed_stream, _unprocessed_stream} ->
