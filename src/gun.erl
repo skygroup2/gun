@@ -805,7 +805,7 @@ ws_upgrade(ServerPid, Path) ->
 -spec ws_upgrade(pid(), iodata(), req_headers()) -> reference().
 ws_upgrade(ServerPid, Path, Headers) ->
 	StreamRef = make_ref(),
-	gen_statem2:cast(ServerPid, {ws_upgrade, self(), StreamRef, Path, Headers}),
+	gen_statem2:cast(ServerPid, {ws_upgrade, self(), StreamRef, Path, normalize_headers(Headers)}),
 	StreamRef.
 
 -spec ws_upgrade(pid(), iodata(), req_headers(), ws_opts()) -> reference().
@@ -813,7 +813,7 @@ ws_upgrade(ServerPid, Path, Headers, Opts) ->
 	ok = gun_ws:check_options(Opts),
 	StreamRef = make_ref(),
 	ReplyTo = maps:get(reply_to, Opts, self()),
-	gen_statem2:cast(ServerPid, {ws_upgrade, ReplyTo, StreamRef, Path, Headers, Opts}),
+	gen_statem2:cast(ServerPid, {ws_upgrade, ReplyTo, StreamRef, Path, normalize_headers(Headers), Opts}),
 	StreamRef.
 
 %% @todo ws_send/2 will need to be deprecated in favor of a variant with StreamRef.
@@ -1070,11 +1070,13 @@ connected(cast, {ws_upgrade, ReplyTo, StreamRef, Path, Headers}, State=#state{op
 	connected(cast, {ws_upgrade, ReplyTo, StreamRef, Path, Headers, WsOpts}, State);
 connected(cast, {ws_upgrade, ReplyTo, StreamRef, Path, Headers, WsOpts},
 		State=#state{origin_host=Host, origin_port=Port,
-			protocol=Protocol, protocol_state=ProtoState})
+			protocol=Protocol, protocol_state=ProtoState,
+			transport = Transport, opts = Opts, proxy_name = ProxyName})
 		when Protocol =:= gun_http ->
 	%% @todo Can fail if HTTP/1.0.
+	{Path1, Headers1} = format_path_headers(Transport, ProxyName, Host, Port, Path, Headers, Opts),
 	ProtoState2 = Protocol:ws_upgrade(ProtoState,
-		StreamRef, ReplyTo, Host, Port, Path, Headers, WsOpts),
+		StreamRef, ReplyTo, Host, Port, Path1, Headers1, WsOpts),
 	{keep_state, State#state{protocol_state=ProtoState2}};
 connected(cast, {ws_upgrade, ReplyTo, StreamRef, _, _, _}, _) ->
 	ReplyTo ! {gun_error, self(), StreamRef, {badstate,
