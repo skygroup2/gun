@@ -19,7 +19,7 @@ defmodule Gun do
     }
   end
 
-  defp format_gun_opts(opts) do
+  def format_gun_opts(opts) do
     Map.drop(opts, [:recv_timeout])
   end
 
