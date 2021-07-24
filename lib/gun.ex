@@ -87,7 +87,7 @@ defmodule Gun do
     end
   end
 
-  defp http_format_error(reason) do
+  def http_format_error(reason) do
     case reason do
       :normal -> {:error, :closed}
       :close -> {:error, :closed}
