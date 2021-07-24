@@ -38,7 +38,11 @@ parse_url(URL) when is_list(URL) ->
   end;
 parse_url(<<"http://", Rest/binary>>) ->
   parse_url(Rest, #{transport => gun_tcp, scheme => http});
+parse_url(<<"ws://", Rest/binary>>) ->
+  parse_url(Rest, #{transport => gun_tcp, scheme => http});
 parse_url(<<"https://", Rest/binary>>) ->
+  parse_url(Rest, #{transport => gun_tls, scheme=> https});
+parse_url(<<"wss://", Rest/binary>>) ->
   parse_url(Rest, #{transport => gun_tls, scheme=> https});
 parse_url(<<"http+unix://", Rest/binary>>) ->
   parse_url(Rest, #{transport => gun_local_tcp, scheme => http_unix});
