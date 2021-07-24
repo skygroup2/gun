@@ -9,6 +9,22 @@ defmodule Gun do
     :gun_app.stop(state)
   end
 
+
+  def test_wss() do
+    url = "wss://demo.piesocket.com/v3/channel_1?api_key=oCdCMcMPQpbvNjUIzqtvF1d2X2okWpDQj4AwARJuAgtjhzKxVEjQU6IdCjwm&notify_self"
+    headers = %{
+      "accept-language" => "en-US,en;q=0.9",
+      "accept-encoding" => "gzip, deflate, br",
+      "cache-control" => "no-cache",
+      "pragma" => "no-cache",
+      "origin" => "https://www.piesocket.com",
+      "user-agent" => "Mozilla/5.0 (Linux; Android 11; Pixel 3 XL) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.164 Mobile Safari/537.36",
+    }
+    proxy_opts = Map.merge(default_option(25_000), %{protocols: [:http], proxy: "http://127.0.0.1:8080", proxy_auth: nil})
+    Gun.ws_upgrade(url, headers, proxy_opts)
+  end
+
+
   def default_option(connect_timeout, recv_timeout\\ 30000) do
     %{
       connect_timeout: connect_timeout,
@@ -25,6 +41,34 @@ defmodule Gun do
 
   def format_gun_opts(opts) do
     Map.drop(opts, [:recv_timeout])
+  end
+
+  def ws_upgrade(url, headers, opts) do
+    u = :gun_url.parse_url(url)
+    case :gun.open(u.host, u.port, Gun.format_gun_opts(opts)) do
+      {:ok, conn} ->
+        mref = Process.monitor(conn)
+        http_await_make_upgrade(conn, mref, u.raw_path, headers, opts)
+      exp ->
+        exp
+    end
+  end
+
+  def http_await_make_upgrade(conn, mref, raw_path, headers, opts) do
+    case :gun.await_up(conn, Map.get(opts, :connect_timeout, 15000), mref) do
+      {:ok, _protocols} ->
+        stream = :gun.ws_upgrade(conn, raw_path, headers, Map.get(opts, :ws_opts, %{}))
+        case http_recv(conn, stream, nil, mref, Map.get(opts, :recv_timeout, 10000)) do
+          {:error, :retry} ->
+            http_await_make_upgrade(conn, mref, raw_path, headers, opts)
+          resp ->
+            Map.merge(resp, %{pid: conn, mref:  mref})
+        end
+      {:error, reason} ->
+        Process.demonitor(mref, [:flush])
+        http_close(nil, conn)
+        http_format_error(reason)
+    end
   end
 
   def http_request(method, url, headers, body, opts, ref) do
