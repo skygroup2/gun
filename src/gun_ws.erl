@@ -55,8 +55,10 @@
 	handler_state :: any()
 }).
 
+check_options(Opts) when is_map(Opts) ->
+	do_check_options(maps:to_list(Opts));
 check_options(Opts) ->
-	do_check_options(maps:to_list(Opts)).
+	do_check_options(Opts).
 
 do_check_options([]) ->
 	ok;
