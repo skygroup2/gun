@@ -15,7 +15,11 @@ defmodule Gun do
       recv_timeout: recv_timeout,
       tcp_opts: [{:reuseaddr, true}, {:linger, {false, 0}}],
       tls_opts: [{:versions, [:"tlsv1.2"]}],
-      http2_opts: %{settings_timeout: 15000, preface_timeout: 30000}
+      http2_opts: %{settings_timeout: 15000, preface_timeout: 30000},
+      ws_opts: %{
+        compress: false,
+        reply_to: self(),
+      },
     }
   end
 
