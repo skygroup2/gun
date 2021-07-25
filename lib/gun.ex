@@ -9,21 +9,22 @@ defmodule Gun do
     :gun_app.stop(state)
   end
 
-
 #  def test_wss() do
 #    url = "wss://demo.piesocket.com/v3/channel_1?api_key=oCdCMcMPQpbvNjUIzqtvF1d2X2okWpDQj4AwARJuAgtjhzKxVEjQU6IdCjwm&notify_self"
 #    headers = %{
 #      "accept-language" => "en-US,en;q=0.9",
 #      "accept-encoding" => "gzip, deflate, br",
-#      "cache-control" => "no-cache",
-#      "pragma" => "no-cache",
-#      "origin" => "https://www.piesocket.com",
-#      "user-agent" => "Mozilla/5.0 (Linux; Android 11; Pixel 3 XL) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.164 Mobile Safari/537.36",
 #    }
-#    proxy_opts = Map.merge(default_option(25_000), %{protocols: [:http], proxy: "http://127.0.0.1:8080", proxy_auth: nil})
-#    Gun.ws_upgrade(url, headers, proxy_opts)
+#    # proxy: "http://127.0.0.1:8080", proxy_auth: nil
+#    proxy_opts = Map.merge(default_option(25_000), %{protocols: [:http]})
+#    case Gun.ws_upgrade(url, headers, proxy_opts) do
+#      %{status_code: 101, protocols: ["websocket"]} = resp ->
+#        # receive ws here
+#        resp
+#      exp ->
+#        exp
+#    end
 #  end
-
 
   def default_option(connect_timeout, recv_timeout\\ 30000) do
     %{
