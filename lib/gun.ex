@@ -9,22 +9,21 @@ defmodule Gun do
     :gun_app.stop(state)
   end
 
-#  def test_wss() do
-#    url = "wss://demo.piesocket.com/v3/channel_1?api_key=oCdCMcMPQpbvNjUIzqtvF1d2X2okWpDQj4AwARJuAgtjhzKxVEjQU6IdCjwm&notify_self"
-#    headers = %{
-#      "accept-language" => "en-US,en;q=0.9",
-#      "accept-encoding" => "gzip, deflate, br",
-#    }
-#    # proxy: "http://127.0.0.1:8080", proxy_auth: nil
-#    proxy_opts = Map.merge(default_option(25_000), %{protocols: [:http]})
-#    case Gun.ws_upgrade(url, headers, proxy_opts) do
-#      %{status_code: 101, protocols: ["websocket"]} = resp ->
-#        # receive ws here
-#        resp
-#      exp ->
-#        exp
-#    end
-#  end
+  def test_wss() do
+    url = "ws://127.0.0.1:8086/echo"
+    headers = %{
+      "accept-language" => "en-US,en;q=0.9",
+      "accept-encoding" => "gzip, deflate, br",
+    }
+    proxy_opts = ws_default_option(25_000)
+    case Gun.ws_upgrade(url, headers, proxy_opts) do
+      %{status_code: 101, protocols: ["websocket"]} = resp ->
+        # receive ws here
+        resp
+      exp ->
+        exp
+    end
+  end
 
   def default_option(connect_timeout, recv_timeout\\ 30000) do
     %{
@@ -32,17 +31,31 @@ defmodule Gun do
       recv_timeout: recv_timeout,
       tcp_opts: [{:reuseaddr, true}, {:linger, {false, 0}}],
       tls_opts: [{:verify, :verify_none}, {:logging_level, :error}, {:log_alert, false}],
-      http_opts: %{version: :"HTTP/1.1"},
-      http2_opts: %{settings_timeout: 15000, preface_timeout: 30000},
+      http_opts: %{
+        version: :"HTTP/1.1"
+      },
+      http2_opts: %{
+        settings_timeout: 15000,
+        preface_timeout: 30000
+      },
       ws_opts: %{
         compress: true,
-        reply_to: self(),
       },
     }
   end
+  def ws_default_option(connect_timeout, recv_timeout\\ 30000) do
+    default_option(connect_timeout, recv_timeout) |> Map.put(:protocols, [:http])
+  end
 
-  def format_gun_opts(opts) do
+  defp format_gun_opts(opts) do
     Map.drop(opts, [:recv_timeout])
+  end
+
+  def ws_send(pid, frame) when is_tuple(frame) do
+    :gun.ws_send(pid, [frame])
+  end
+  def ws_send(pid, frame) when is_list(frame) do
+    :gun.ws_send(pid, frame)
   end
 
   def ws_upgrade(url, headers, opts) do
@@ -60,7 +73,7 @@ defmodule Gun do
     case :gun.await_up(conn, Map.get(opts, :connect_timeout, 15000), mref) do
       {:ok, _protocols} ->
         stream = :gun.ws_upgrade(conn, raw_path, headers, Map.get(opts, :ws_opts, %{}))
-        case http_recv(conn, stream, nil, mref, Map.get(opts, :recv_timeout, 10000)) do
+        case http_recv(conn, stream, :ws, mref, Map.get(opts, :recv_timeout, 10000)) do
           {:error, :retry} ->
             http_await_make_upgrade(conn, mref, raw_path, headers, opts)
           resp ->
