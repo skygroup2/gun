@@ -31,6 +31,7 @@ defmodule Gun do
       recv_timeout: recv_timeout,
       tcp_opts: [{:reuseaddr, true}, {:linger, {false, 0}}],
       tls_opts: [{:verify, :verify_none}, {:logging_level, :error}, {:log_alert, false}],
+      http_opts: %{version: :"HTTP/1.1"},
       http2_opts: %{settings_timeout: 15000, preface_timeout: 30000},
       ws_opts: %{
         compress: true,
@@ -45,7 +46,7 @@ defmodule Gun do
 
   def ws_upgrade(url, headers, opts) do
     u = :gun_url.parse_url(url)
-    case :gun.open(u.host, u.port, Gun.format_gun_opts(opts)) do
+    case :gun.open(u.host, u.port, format_gun_opts(opts)) do
       {:ok, conn} ->
         mref = Process.monitor(conn)
         http_await_make_upgrade(conn, mref, u.raw_path, headers, opts)
