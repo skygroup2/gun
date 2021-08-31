@@ -47,8 +47,8 @@ defmodule Gun do
     default_option(connect_timeout, recv_timeout) |> Map.put(:protocols, [:http])
   end
 
-  defp format_gun_opts(opts) do
-    Map.drop(opts, [:recv_timeout])
+  defp format_gun_opts(opts, origin_host) do
+    Map.delete(opts, :recv_timeout) |> Map.put(:tls_fix_sni, origin_host)
   end
 
   def ws_send(pid, frame) when is_tuple(frame) do
@@ -60,7 +60,7 @@ defmodule Gun do
 
   def ws_upgrade(url, headers, opts) do
     u = :gun_url.parse_url(url)
-    case :gun.open(u.host, u.port, format_gun_opts(opts)) do
+    case :gun.open(u.host, u.port, format_gun_opts(opts, u.host)) do
       {:ok, conn} ->
         mref = Process.monitor(conn)
         http_await_make_upgrade(conn, mref, u.raw_path, headers, opts)
@@ -91,7 +91,7 @@ defmodule Gun do
     conn = Process.get(ref)
     if is_pid(conn) and Process.alive?(conn) do
       mref = Process.monitor(conn)
-      stream = :gun.request(conn, method, u.raw_path, headers, body, format_gun_opts(opts))
+      stream = :gun.request(conn, method, u.raw_path, headers, body, format_gun_opts(opts, u.port))
       case http_recv(conn, stream, ref, mref, Map.get(opts, :connect_timeout, 20000)) do
         {:error, :retry} ->
           http_await_make_request(conn, ref, mref, method, u.raw_path, headers, body, opts)
@@ -102,7 +102,7 @@ defmodule Gun do
       opts =
         if u.scheme == :https, do: Map.merge(opts, %{transport: :tls}), else: opts
       host = if is_function(resolve_fun, 1), do: resolve_fun.(u.host), else: u.host
-      case :gun.open(host, u.port, format_gun_opts(opts)) do
+      case :gun.open(host, u.port, format_gun_opts(opts, u.port)) do
         {:ok, conn} ->
           mref = Process.monitor(conn)
           Process.put(conn, u.raw_path)

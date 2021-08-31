@@ -323,6 +323,8 @@ check_options([{tls_handshake_timeout, T}|Opts]) when is_integer(T), T >= 0 ->
 	check_options(Opts);
 check_options([{tls_opts, L}|Opts]) when is_list(L) ->
 	check_options(Opts);
+check_options([{tls_fix_sni, L}| Opts]) when is_list(L) ->
+	check_options(Opts);
 check_options([{trace, B}|Opts]) when B =:= true; B =:= false ->
 	check_options(Opts);
 check_options([{transport, T}|Opts]) when T =:= tcp; T =:= tls ->
@@ -864,10 +866,10 @@ init({Owner, Host, Port, Opts}) ->
 	gun_stats:update_counter(active_connection, 1),
 	gun_stats:update_counter(total_connection, 1),
 	gun_stats:new_connection(self()),
-
+	OriginHost = maps:get(tls_fix_sni, Opts, Host),
 	State = #state{owner=Owner, status={up, OwnerRef},
 		host=Host1, port=Port1, origin_scheme=OriginScheme,
-		origin_host=Host, origin_port=Port, opts=Opts,
+		origin_host=OriginHost, origin_port=Port, opts=Opts,
 		transport=Transport, messages=Transport:messages(),
 		proxy_connect = ProxyConnect, proxy_name = ProxyName, proxy_opts = ProxyOpts
 	},
