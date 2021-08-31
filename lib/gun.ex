@@ -86,7 +86,7 @@ defmodule Gun do
     end
   end
 
-  def http_request(method, url, headers, body, opts, ref) do
+  def http_request(method, url, headers, body, opts, ref, resolve_fun \\ nil) do
     u = :gun_url.parse_url(url)
     conn = Process.get(ref)
     if is_pid(conn) and Process.alive?(conn) do
@@ -101,7 +101,8 @@ defmodule Gun do
     else
       opts =
         if u.scheme == :https, do: Map.merge(opts, %{transport: :tls}), else: opts
-      case :gun.open(u.host, u.port, format_gun_opts(opts)) do
+      host = if is_function(resolve_fun, 1), do: resolve_fun.(u.host), else: u.host
+      case :gun.open(host, u.port, format_gun_opts(opts)) do
         {:ok, conn} ->
           mref = Process.monitor(conn)
           Process.put(conn, u.raw_path)
