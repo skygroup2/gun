@@ -36,17 +36,16 @@ connect(ProxyHost, ProxyPort, Opts, Timeout)
 do_handshake(Socket, Host, Port, Options, Timeout) ->
   ProxyUser = proplists:get_value(connect_user, Options),
   ProxyPass = proplists:get_value(connect_pass, Options, <<>>),
-  ProxyPort = proplists:get_value(connect_port, Options),
   %% set defaults headers
-  HostHdr = case ProxyPort of
+  HostHdr = case Port of
     80 ->
       list_to_binary(Host);
     _ ->
       case inet:parse_ipv6strict_address(Host) of
         {ok, _Addr} ->
-            iolist_to_binary(["[", Host, "]:", integer_to_list(ProxyPort)]);
+          iolist_to_binary(["[", Host, "]:", integer_to_list(Port)]);
         {error, einval} ->
-          iolist_to_binary([Host, ":", integer_to_list(ProxyPort)])
+          iolist_to_binary([Host, ":", integer_to_list(Port)])
       end
   end,
   Headers0 = [<<"Host: ", HostHdr/binary>>],
@@ -58,9 +57,8 @@ do_handshake(Socket, Host, Port, Options, Timeout) ->
         ProxyPass/binary>>),
       Headers0 ++ [<< "Proxy-Authorization: Basic ", Credentials/binary >>]
   end,
-  Path = iolist_to_binary([Host, ":", integer_to_list(Port)]),
-
-  Payload = [<< "CONNECT ", Path/binary, " HTTP/1.1", "\r\n" >>,
+  %% Path = iolist_to_binary([Host, ":", integer_to_list(Port)]),
+  Payload = [<< "CONNECT ", HostHdr/binary, " HTTP/1.1", "\r\n" >>,
     gun_bstr:join(lists:reverse(Headers), <<"\r\n">>),
     <<"\r\n\r\n">>],
   case gen_tcp:send(Socket, Payload) of
