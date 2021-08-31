@@ -42,7 +42,12 @@ do_handshake(Socket, Host, Port, Options, Timeout) ->
     80 ->
       list_to_binary(Host);
     _ ->
-      iolist_to_binary([Host, ":", integer_to_list(ProxyPort)])
+      case inet:parse_ipv6strict_address(Host) of
+        {ok, _Addr} ->
+            iolist_to_binary(["[", Host, "]:", integer_to_list(ProxyPort)]);
+        {error, einval} ->
+          iolist_to_binary([Host, ":", integer_to_list(ProxyPort)])
+      end
   end,
   Headers0 = [<<"Host: ", HostHdr/binary>>],
   Headers = case ProxyUser of
