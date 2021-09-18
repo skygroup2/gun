@@ -13,7 +13,7 @@
 %% OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 -module(gun).
--behavior(gen_statem2).
+-behavior(gen_statem).
 
 -ifdef(OTP_RELEASE).
 -compile({nowarn_deprecated_function, [{erlang, get_stacktrace, 0}]}).
@@ -22,7 +22,6 @@
 %% Connection.
 -export([open/2]).
 -export([open/3]).
--export([open_unix/2]).
 -export([set_owner/2]).
 -export([info/1]).
 -export([close/1]).
@@ -247,11 +246,6 @@ open(Host, Port) ->
 open(Host, Port, Opts) when is_list(Host); is_atom(Host); is_tuple(Host) ->
 	do_open(Host, Port, Opts).
 
--spec open_unix(Path::string(), opts())
-	-> {ok, pid()} | {error, any()}.
-open_unix(SocketPath, Opts) ->
-	do_open({local, SocketPath}, 0, Opts).
-
 do_open(Host, Port, Opts0) ->
 	%% We accept both ssl and tls but only use tls in the code.
 	Opts = case Opts0 of
@@ -374,7 +368,7 @@ consider_tracing(_, _) ->
 
 -spec set_owner(pid(), pid()) -> ok.
 set_owner(ServerPid, NewOwnerPid) ->
-	gen_statem2:cast(ServerPid, {set_owner, self(), NewOwnerPid}).
+	gen_statem:cast(ServerPid, {set_owner, self(), NewOwnerPid}).
 
 -spec info(pid()) -> map().
 info(ServerPid) ->
@@ -438,7 +432,7 @@ close(ServerPid) ->
 
 -spec shutdown(pid()) -> ok.
 shutdown(ServerPid) ->
-	gen_statem2:cast(ServerPid, shutdown).
+	gen_statem:cast(ServerPid, shutdown).
 
 %% Requests.
 
@@ -545,7 +539,7 @@ headers(ServerPid, Method, Path, Headers, ReqOpts) ->
 	StreamRef = make_ref(),
 	InitialFlow = maps:get(flow, ReqOpts, infinity),
 	ReplyTo = maps:get(reply_to, ReqOpts, self()),
-	gen_statem2:cast(ServerPid, {headers, ReplyTo, StreamRef,
+	gen_statem:cast(ServerPid, {headers, ReplyTo, StreamRef,
 		Method, Path, normalize_headers(Headers), InitialFlow}),
 	StreamRef.
 
@@ -558,7 +552,7 @@ request(ServerPid, Method, Path, Headers, Body, ReqOpts) ->
 	StreamRef = make_ref(),
 	InitialFlow = maps:get(flow, ReqOpts, infinity),
 	ReplyTo = maps:get(reply_to, ReqOpts, self()),
-	gen_statem2:cast(ServerPid, {request, ReplyTo, StreamRef,
+	gen_statem:cast(ServerPid, {request, ReplyTo, StreamRef,
 		Method, Path, normalize_headers(Headers), Body, InitialFlow}),
 	StreamRef.
 
@@ -581,7 +575,7 @@ data(ServerPid, StreamRef, IsFin, Data) ->
 		0 when IsFin =:= nofin ->
 			ok;
 		_ ->
-			gen_statem2:cast(ServerPid, {data, self(), StreamRef, IsFin, Data})
+			gen_statem:cast(ServerPid, {data, self(), StreamRef, IsFin, Data})
 	end.
 
 %% Awaiting gun messages.
@@ -784,19 +778,19 @@ flush_ref(StreamRef) ->
 
 -spec update_flow(pid(), reference(), pos_integer()) -> ok.
 update_flow(ServerPid, StreamRef, Flow) ->
-	gen_statem2:cast(ServerPid, {update_flow, self(), StreamRef, Flow}).
+	gen_statem:cast(ServerPid, {update_flow, self(), StreamRef, Flow}).
 
 %% Cancelling a stream.
 
 -spec cancel(pid(), reference()) -> ok.
 cancel(ServerPid, StreamRef) ->
-	gen_statem2:cast(ServerPid, {cancel, self(), StreamRef}).
+	gen_statem:cast(ServerPid, {cancel, self(), StreamRef}).
 
 %% Information about a stream.
 
 -spec stream_info(pid(), reference()) -> {ok, map() | undefined} | {error, not_connected}.
 stream_info(ServerPid, StreamRef) ->
-	gen_statem2:call(ServerPid, {stream_info, StreamRef}).
+	gen_statem:call(ServerPid, {stream_info, StreamRef}).
 
 %% Websocket.
 
@@ -807,7 +801,7 @@ ws_upgrade(ServerPid, Path) ->
 -spec ws_upgrade(pid(), iodata(), req_headers()) -> reference().
 ws_upgrade(ServerPid, Path, Headers) ->
 	StreamRef = make_ref(),
-	gen_statem2:cast(ServerPid, {ws_upgrade, self(), StreamRef, Path, normalize_headers(Headers)}),
+	gen_statem:cast(ServerPid, {ws_upgrade, self(), StreamRef, Path, normalize_headers(Headers)}),
 	StreamRef.
 
 -spec ws_upgrade(pid(), iodata(), req_headers(), ws_opts()) -> reference().
@@ -815,21 +809,21 @@ ws_upgrade(ServerPid, Path, Headers, Opts) ->
 	ok = gun_ws:check_options(Opts),
 	StreamRef = make_ref(),
 	ReplyTo = maps:get(reply_to, Opts, self()),
-	gen_statem2:cast(ServerPid, {ws_upgrade, ReplyTo, StreamRef, Path, normalize_headers(Headers), Opts}),
+	gen_statem:cast(ServerPid, {ws_upgrade, ReplyTo, StreamRef, Path, normalize_headers(Headers), Opts}),
 	StreamRef.
 
 %% @todo ws_send/2 will need to be deprecated in favor of a variant with StreamRef.
 %% But it can be kept for the time being since it can still work for HTTP/1.1.
 -spec ws_send(pid(), ws_frame() | [ws_frame()]) -> ok.
 ws_send(ServerPid, Frames) ->
-	gen_statem2:cast(ServerPid, {ws_send, self(), Frames}).
+	gen_statem:cast(ServerPid, {ws_send, self(), Frames}).
 
 %% Internals.
 
 callback_mode() -> state_functions.
 
 start_link(Owner, Host, Port, Opts) ->
-	gen_statem2:start_link(?MODULE, {Owner, Host, Port, Opts}, []).
+	gen_statem:start_link(?MODULE, {Owner, Host, Port, Opts}, []).
 
 init({Owner, Host, Port, Opts}) ->
 	Retry = maps:get(retry, Opts, 0),
@@ -874,7 +868,7 @@ init({Owner, Host, Port, Opts}) ->
 		proxy_connect = ProxyConnect, proxy_name = ProxyName, proxy_opts = ProxyOpts
 	},
 	{ok, not_connected, State,
-		[{selective, fun selective_loop_receive/1}, {next_event, internal, {retries, max(Retry, 1), connect}}]}.
+		[{next_event, internal, {retries, max(Retry, 1), connect}}]}.
 
 default_transport(443) -> tls;
 default_transport(_) -> tcp.
@@ -1376,16 +1370,16 @@ terminate(_Reason, _StateName, #state{socket = Socket, transport = Transport}) -
 
 %% PATCH LIB
 
-selective_loop_receive(HibernateAfterTimeout) ->
-	receive
-		{'$gen_cast', {shutdown, _}} = Msg ->
-			Msg;
-    Msg ->
-      Msg
-  after
-    HibernateAfterTimeout ->
-			{receive_empty, true}
-  end.
+%%selective_loop_receive(HibernateAfterTimeout) ->
+%%	receive
+%%		{'$gen_cast', {shutdown, _}} = Msg ->
+%%			Msg;
+%%    Msg ->
+%%      Msg
+%%  after
+%%    HibernateAfterTimeout ->
+%%			{receive_empty, true}
+%%  end.
 
 
 get_proxy_auth(Opts) ->

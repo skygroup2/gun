@@ -33,7 +33,6 @@ defmodule Gun.MixProject do
       {:idna, "~> 6.1"},
       {:certifi, "~> 2.7"},
       {:ssl_verify_fun, "~> 1.1"},
-      {:gen_statem2, git: "https://github.com/skygroup2/gen_statem2.git", branch: "master"},
       {:jason, "~> 1.2", only: :test},
     ]
   end
