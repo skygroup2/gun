@@ -58,9 +58,10 @@ defmodule Gun do
     :gun.ws_send(pid, frame)
   end
 
-  def ws_upgrade(url, headers, opts) do
+  def ws_upgrade(url, headers, opts, resolve_fun \\ nil) do
     u = :gun_url.parse_url(url)
-    case :gun.open(u.host, u.port, format_gun_opts(opts, u.host)) do
+    host = if is_function(resolve_fun, 1), do: resolve_fun.(u.host), else: u.host
+    case :gun.open(host, u.port, format_gun_opts(opts, u.host)) do
       {:ok, conn} ->
         mref = Process.monitor(conn)
         http_await_make_upgrade(conn, mref, u.raw_path, headers, opts)
