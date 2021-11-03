@@ -44,7 +44,7 @@ defmodule Gun do
     }
   end
   def ws_default_option(connect_timeout, recv_timeout\\ 30000) do
-    default_option(connect_timeout, recv_timeout) |> Map.put(:protocols, [:http])
+    default_option(connect_timeout, recv_timeout) |> Map.merge(%{protocols: [:http], is_ws: true})
   end
 
   defp format_gun_opts(opts, origin_host) do

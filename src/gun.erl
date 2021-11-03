@@ -323,6 +323,8 @@ check_options([{trace, B}|Opts]) when B =:= true; B =:= false ->
 	check_options(Opts);
 check_options([{transport, T}|Opts]) when T =:= tcp; T =:= tls ->
 	check_options(Opts);
+check_options([{is_ws, IsWs}| Opts]) when is_boolean(IsWs) ->
+	check_options(Opts);
 check_options([{ws_opts, ProtoOpts}|Opts]) when is_map(ProtoOpts) ->
 	case gun_ws:check_options(ProtoOpts) of
 		ok ->
@@ -835,6 +837,7 @@ init({Owner, Host, Port, Opts}) ->
 	end,
 	OwnerRef = monitor(process, Owner),
 	GunTcpOpt = maps:get(tcp_opts, Opts, []),
+	IsWs = maps:get(is_ws, Opts, false),
 	{ProxyConnect, ProxyName, ProxyOpts, Host1, Port1} = case maps:get(proxy, Opts, undefined) of
 	 	Url when is_binary(Url) orelse is_list(Url) ->
       Url1 = gun_url:parse_url(Url),
@@ -842,12 +845,12 @@ init({Owner, Host, Port, Opts}) ->
       {ProxyUser, ProxyPass} = get_proxy_auth(Opts),
       PO = [{connect_host, Host}, {connect_port, Port}, {connect_user, ProxyUser},
 				{connect_pass, ProxyPass}, {tcp_opt, GunTcpOpt}],
-      return_http_proxy(Transport, PO, ProxyHost, ProxyPort);
+      return_http_proxy(Transport, PO, ProxyHost, ProxyPort, IsWs);
     {http, ProxyHost, ProxyPort} ->
       {ProxyUser, ProxyPass} = get_proxy_auth(Opts),
       PO = [{connect_host, Host}, {connect_port, Port}, {connect_user, ProxyUser},
 				{connect_pass, ProxyPass}, {tcp_opt, GunTcpOpt}],
-      return_http_proxy(Transport, PO, ProxyHost, ProxyPort);
+      return_http_proxy(Transport, PO, ProxyHost, ProxyPort, IsWs);
     {ProxyType, ProxyHost, ProxyPort} when ProxyType =:= socks5 orelse ProxyType =:= socks6 ->
       {ProxyUser, ProxyPass} = get_proxy_auth(Opts),
       ProxyResolve = maps:get(socks5_resolve, Opts, local),
@@ -1388,8 +1391,8 @@ get_proxy_auth(Opts) ->
 		_ -> {undefined, undefined}
 	end.
 
-return_http_proxy(gun_tcp, _ProxyOpts, ProxyHost, ProxyPort) -> {gun_tcp, gun_http_proxy:name(), [], ProxyHost, ProxyPort};
-return_http_proxy(_, ProxyOpts, ProxyHost, ProxyPort) -> {gun_http_proxy, gun_http_proxy:name(), ProxyOpts, ProxyHost, ProxyPort}.
+return_http_proxy(gun_tcp, _ProxyOpts, ProxyHost, ProxyPort, false) -> {gun_tcp, gun_http_proxy:name(), [], ProxyHost, ProxyPort};
+return_http_proxy(_, ProxyOpts, ProxyHost, ProxyPort, _IsWs) -> {gun_http_proxy, gun_http_proxy:name(), ProxyOpts, ProxyHost, ProxyPort}.
 
 format_path_headers(Transport, ProxyName, OriginHost, OriginPort, Path, Headers, Opts) ->
 	case maps:get(proxy_auth, Opts, undefined) of
