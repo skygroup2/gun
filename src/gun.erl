@@ -1407,7 +1407,7 @@ add_host_to_path(OriginHost, OriginPort, Path) ->
 		80 ->
 			iolist_to_binary([<<"http://">>, OriginHost, Path]);
 		_ ->
-			iolist_to_binary([<<"http://">>, OriginHost, integer_to_binary(OriginPort), Path])
+			iolist_to_binary([<<"http://">>, OriginHost, ":", integer_to_binary(OriginPort), Path])
 	end.
 
 add_proxy_authorization(ProxyUser, ProxyPass, Headers) ->
