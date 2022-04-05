@@ -281,6 +281,8 @@ check_options([{connect_timeout, infinity}|Opts]) ->
 	check_options(Opts);
 check_options([{connect_timeout, T}|Opts]) when is_integer(T), T >= 0 ->
 	check_options(Opts);
+check_options([{hdr_lowercase, T}|Opts]) when is_boolean(T) ->
+	check_options(Opts);
 %% Removed
 check_options([{http_opts, ProtoOpts}|Opts]) when is_map(ProtoOpts) ->
 	case gun_http:check_options(ProtoOpts) of
