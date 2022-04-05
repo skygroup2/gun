@@ -542,7 +542,7 @@ headers(ServerPid, Method, Path, Headers, ReqOpts) ->
 	InitialFlow = maps:get(flow, ReqOpts, infinity),
 	ReplyTo = maps:get(reply_to, ReqOpts, self()),
 	gen_statem:cast(ServerPid, {headers, ReplyTo, StreamRef,
-		Method, Path, normalize_headers(Headers), InitialFlow}),
+		Method, Path, normalize_headers(Headers, maps:get(hdr_lowercase, ReqOpts, true)), InitialFlow}),
 	StreamRef.
 
 -spec request(pid(), iodata(), iodata(), req_headers(), iodata()) -> reference().
@@ -555,19 +555,24 @@ request(ServerPid, Method, Path, Headers, Body, ReqOpts) ->
 	InitialFlow = maps:get(flow, ReqOpts, infinity),
 	ReplyTo = maps:get(reply_to, ReqOpts, self()),
 	gen_statem:cast(ServerPid, {request, ReplyTo, StreamRef,
-		Method, Path, normalize_headers(Headers), Body, InitialFlow}),
+		Method, Path, normalize_headers(Headers, maps:get(hdr_lowercase, ReqOpts, true)), Body, InitialFlow}),
 	StreamRef.
 
-normalize_headers([]) ->
+normalize_headers([], _LowerCase) ->
 	[];
-normalize_headers([{Name, Value}|Tail]) when is_binary(Name) ->
-	[{string:lowercase(Name), Value}|normalize_headers(Tail)];
-normalize_headers([{Name, Value}|Tail]) when is_list(Name) ->
-	[{string:lowercase(unicode:characters_to_binary(Name)), Value}|normalize_headers(Tail)];
-normalize_headers([{Name, Value}|Tail]) when is_atom(Name) ->
-	[{string:lowercase(atom_to_binary(Name, latin1)), Value}|normalize_headers(Tail)];
-normalize_headers(Headers) when is_map(Headers) ->
-	normalize_headers(maps:to_list(Headers)).
+normalize_headers([{Name, Value}|Tail], LowerCase) when is_binary(Name) ->
+	[{normalize_header_name(Name, LowerCase), Value}|normalize_headers(Tail, LowerCase)];
+normalize_headers([{Name, Value}|Tail], LowerCase) when is_list(Name) ->
+	[{normalize_header_name(unicode:characters_to_binary(Name), LowerCase), Value}|normalize_headers(Tail, LowerCase)];
+normalize_headers([{Name, Value}|Tail], LowerCase) when is_atom(Name) ->
+	[{normalize_header_name(atom_to_binary(Name, latin1), LowerCase), Value}|normalize_headers(Tail, LowerCase)];
+normalize_headers(Headers, LowerCase) when is_map(Headers) ->
+	normalize_headers(maps:to_list(Headers), LowerCase).
+
+normalize_header_name(Name, false) ->
+	Name;
+normalize_header_name(Name, true) ->
+	string:lowercase(Name).
 
 %% Streaming data.
 
@@ -803,7 +808,7 @@ ws_upgrade(ServerPid, Path) ->
 -spec ws_upgrade(pid(), iodata(), req_headers()) -> reference().
 ws_upgrade(ServerPid, Path, Headers) ->
 	StreamRef = make_ref(),
-	gen_statem:cast(ServerPid, {ws_upgrade, self(), StreamRef, Path, normalize_headers(Headers)}),
+	gen_statem:cast(ServerPid, {ws_upgrade, self(), StreamRef, Path, normalize_headers(Headers, true)}),
 	StreamRef.
 
 -spec ws_upgrade(pid(), iodata(), req_headers(), ws_opts()) -> reference().
@@ -811,7 +816,8 @@ ws_upgrade(ServerPid, Path, Headers, Opts) ->
 	ok = gun_ws:check_options(Opts),
 	StreamRef = make_ref(),
 	ReplyTo = maps:get(reply_to, Opts, self()),
-	gen_statem:cast(ServerPid, {ws_upgrade, ReplyTo, StreamRef, Path, normalize_headers(Headers), Opts}),
+	gen_statem:cast(ServerPid, {ws_upgrade, ReplyTo, StreamRef, Path,
+		normalize_headers(Headers, maps:get(hdr_lowercase, Opts, true)), Opts}),
 	StreamRef.
 
 %% @todo ws_send/2 will need to be deprecated in favor of a variant with StreamRef.
