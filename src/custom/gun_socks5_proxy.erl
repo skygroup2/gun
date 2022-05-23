@@ -37,7 +37,7 @@ do_handshake(Socket, Host, Port, Options, Timeout) ->
   ProxyUser = proplists:get_value(socks5_user, Options),
   ProxyPass = proplists:get_value(socks5_pass, Options, <<>>),
   case ProxyUser of
-    undefined ->
+    _ when ProxyUser == undefined orelse ProxyUser == nil ->
       %% no auth
       ok = gen_tcp:send(Socket, gun_socks5_msg:encode(c, #{type => auth, method => 0})),
       case recv_msg(Socket, gun_socks5_msg:recv_size(auth_resp), Timeout, <<>>) of

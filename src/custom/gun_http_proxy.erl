@@ -50,7 +50,7 @@ do_handshake(Socket, Host, Port, Options, Timeout) ->
   end,
   Headers0 = [<<"Host: ", HostHdr/binary>>],
   Headers = case ProxyUser of
-    undefined ->
+    _ when ProxyUser == undefined orelse ProxyUser == nil ->
       Headers0;
     _ ->
       Credentials = base64:encode(<<ProxyUser/binary, ":",
