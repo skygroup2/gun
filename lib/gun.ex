@@ -30,7 +30,7 @@ defmodule Gun do
       connect_timeout: connect_timeout,
       recv_timeout: recv_timeout,
       tcp_opts: [{:reuseaddr, true}, {:linger, {false, 0}}],
-      tls_opts: [{:verify, :verify_none}, {:logging_level, :error}, {:log_alert, false}],
+      tls_opts: [{:reuse_sessions, false}, {:verify, :verify_none}, {:logging_level, :error}, {:log_alert, false}],
       http_opts: %{
         version: :"HTTP/1.1"
       },
