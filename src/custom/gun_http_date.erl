@@ -12,6 +12,7 @@
 -export([date_to_rfc2109/1]).
 
 -export([parse_http_date/1,
+  rfc3339_to_date/1,
   rfc2109_to_date/1,
   rfc1123_to_date/1,
   rfc850_to_date/1,
@@ -38,27 +39,50 @@ date_to_rfc2109({Date = {Y, Mo, D}, {H, Mi, S}}) ->
 %% be sent as RFC1123 dates in HTTP/1.1.
 -spec parse_http_date(binary()) -> any().
 parse_http_date(Data) ->
-  case rfc1123_to_date(Data) of
-    {error, badarg} ->
-      case rfc850_to_date(Data) of
-        {error, badarg} ->
-          case asctime_to_date(Data) of
-            {error, badarg} ->
-              case rfc2109_to_date(Data) of
-                {error, badarg} ->
-                  {error, badarg};
-                HTTPDate ->
-                  HTTPDate
-              end;
-            HTTPDate ->
-              HTTPDate
-          end;
-        HTTPDate ->
-          HTTPDate
-      end;
-    HTTPDate ->
-      HTTPDate
-  end.
+  TryList = [
+    fun rfc2109_to_date/1,
+    fun rfc3339_to_date/1,
+    fun rfc1123_to_date/1,
+    fun rfc850_to_date/1,
+    fun asctime_to_date/1
+  ],
+  reduce_while({error, badarg}, TryList, fun (Acc, X) -> 
+    case X(Data) of
+      {error, badarg} ->
+        {continue, Acc};
+      HTTPDate ->
+        {halt, HTTPDate}
+    end
+  end).
+
+
+reduce_while(Acc, [], _Fun) -> Acc;
+reduce_while(Acc, [H|T], Fun) ->
+    case Fun(Acc, H) of
+        {continue, NewAcc} ->
+            reduce_while(NewAcc, T, Fun);
+        {halt, NewAcc} ->
+            NewAcc
+    end.
+
+-spec rfc3339_to_date(binary()) -> any().
+rfc3339_to_date(Data) ->
+    wkday(Data,
+    fun (<< ", ", Rest/binary >>, _WkDay) ->
+      date2(Rest,
+        fun (<< " ", Rest2/binary >>, Date) ->
+          time(Rest2,
+            fun (<< " GMT", Rest3/binary >>, Time) ->
+              http_date_ret(Rest3, {Date, Time});
+                (_Any, _Time) ->
+                  {error, badarg}
+            end);
+            (_Any, _Date) ->
+              {error, badarg}
+        end);
+        (_Any, _WkDay) ->
+          {error, badarg}
+    end).
 
 %% @doc Parse an RFC2109 date.
 -spec rfc2109_to_date(binary()) -> any().
@@ -220,10 +244,7 @@ date2(<< D1, D2, "-", M:3/binary, "-", Y1, Y2, Rest/binary >>, Fun)
       {error, badarg};
     Month ->
       Year = (Y1 - $0) * 10 + (Y2 - $0),
-      Year2 = case Year > 50 of
-                true -> Year + 1900;
-                false -> Year + 2000
-              end,
+      Year2 = Year + 2000,
       Fun(Rest, {
         Year2,
         Month,
